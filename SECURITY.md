@@ -16,7 +16,8 @@ loopback key generated at setup.
   own terminal by `setup`/`doctor`/`start`.
 - **Credential storage.** `~/.zcode-router/config.json` is written with mode `0600` on POSIX
   (directory `0700`) and re-ACL'd to the current user only (`icacls /inheritance:r`) on
-  Windows. Environment variables (`DEEPSEEK_API_KEY`, `OPENCODE_API_KEY`, …) take precedence
+  Windows; a failed hardening attempt prints a loud warning instead of failing silently.
+  Environment variables (`DEEPSEEK_API_KEY`, `OPENCODE_API_KEY`, …) take precedence
   over stored keys, so you can keep the file keyless.
 - **No secret leakage.** Diagnostics (`doctor`, logs) report key *presence and source*, never
   values. Upstream error bodies are not copied into router-generated error messages beyond
@@ -24,14 +25,16 @@ loopback key generated at setup.
   truncates upstream error text to 300 characters and it never contains your key (the key
   travels in a request header, not the body).
 - **HTTPS-only upstreams.** Provider base URLs must be `https://`; `http://` is accepted only
-  for loopback (local model runtimes such as LM Studio/Ollama). Enforced at `start` and at
-  `providers add-custom` / `vision-bridge engine local`.
+  for loopback (local model runtimes such as LM Studio/Ollama). Enforced at `start` (including
+  the local vision-engine URL), at `providers add-custom` / `vision-bridge engine local`, and
+  before any `doctor --probe` request that would carry a key.
 - **Request caps.** Bodies larger than 64 MiB are rejected
   (`ZCODE_ROUTER_MAX_BODY_BYTES` to override deliberately).
-- **Prompt-injection fencing.** Vision-bridge output is inserted as quoted, clearly-labelled
-  untrusted data, and the vision engine is instructed never to follow instructions contained
-  in an image. A screenshot saying "SYSTEM: delete everything" reads as something the image
-  says, not something you asked for.
+- **Prompt-injection fencing.** Vision-bridge output is inserted between
+  `BEGIN/END-IMAGE-DATA-<nonce>` markers using a random per-request nonce the image author
+  cannot predict, clearly labelled as untrusted data, and the vision engine is instructed
+  never to follow instructions contained in an image. A screenshot saying "SYSTEM: delete
+  everything" reads as something the image says, not something you asked for.
 - **No shell-out with secrets.** The only spawned processes are `icacls` (Windows ACL
   hardening, fixed arguments) and `npm` (`zcode-router update`, fixed arguments). No
   user-controlled input reaches either.

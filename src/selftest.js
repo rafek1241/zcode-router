@@ -186,7 +186,11 @@ export async function runSelftest(log = console.log) {
     check('vision-capable model receives the image untouched', directParts.some((p) => p.type === 'image_url'));
 
     const fenced = forwardedParts.find((p) => p.type === 'text' && p.text.includes('MOCK-VISION-READ'));
-    check('evidence is fenced as untrusted data', Boolean(fenced && fenced.text.includes('untrusted data') && fenced.text.includes('"""')));
+    const fenceMatch = fenced?.text.match(/BEGIN-IMAGE-DATA-([0-9a-f]{16})/);
+    check(
+      'evidence is fenced as untrusted data',
+      Boolean(fenceMatch && fenced.text.includes('untrusted data') && fenced.text.includes(`END-IMAGE-DATA-${fenceMatch[1]}`))
+    );
   } finally {
     await close();
   }

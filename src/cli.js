@@ -145,6 +145,15 @@ async function cmdStart(args) {
       }
     }
   }
+  if (cfg.visionBridge?.engine === 'local') {
+    try {
+      assertSafeBaseURL(cfg.visionBridge.local?.baseURL || '');
+    } catch (e) {
+      err(`vision bridge: ${e.message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
   if (catalog(cfg).length === 0) {
     err('No routable models: enable a provider and store its key first (`zcode-router setup`).');
     process.exitCode = 1;
@@ -222,6 +231,7 @@ async function cmdDoctor(args) {
     ok(`provider ${p.id}`, Boolean(key) || keyless, key ? `key from ${source}` : keyless ? 'loopback, no key needed' : 'NO KEY');
     if (args.includes('--probe') && key) {
       try {
+        assertSafeBaseURL(p.baseURL);
         const r = await fetch(`${p.baseURL.replace(/\/+$/, '')}/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
         ok(`provider ${p.id} probe`, r.ok, `GET /models -> HTTP ${r.status} (free call)`);
       } catch (e) {

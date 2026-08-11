@@ -36,8 +36,9 @@ export function saveConfig(cfg) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const p = configPath();
   fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
-  harden(dir, true);
-  harden(p, false);
+  if (!harden(dir, true) || !harden(p, false)) {
+    console.error(`warning: could not restrict permissions on ${p} — on a shared machine other users may be able to read your keys`);
+  }
 }
 
 function harden(target, isDir) {
@@ -45,8 +46,15 @@ function harden(target, isDir) {
     try {
       const domain = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\` : '';
       execFileSync('icacls', [target, '/inheritance:r', '/grant:r', `${domain}${os.userInfo().username}:${isDir ? '(OI)(CI)F' : '(R,W)'}`], { stdio: 'ignore' });
-    } catch { /* best effort: %USERPROFILE% ACLs already restrict other users */ }
-  } else {
-    try { fs.chmodSync(target, isDir ? 0o700 : 0o600); } catch { /* exotic fs */ }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    fs.chmodSync(target, isDir ? 0o700 : 0o600);
+    return true;
+  } catch {
+    return false;
   }
 }

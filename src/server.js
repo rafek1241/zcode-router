@@ -1,7 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { catalog, resolveModel, autoVisionEngine, resolveKey, providerEntry } from './providers.js';
+import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL } from './providers.js';
 import { VisionCache, bodyHasImage, bridgeImages } from './vision.js';
 
 const MAX_BODY_BYTES = Number(process.env.ZCODE_ROUTER_MAX_BODY_BYTES) || 64 * 1024 * 1024;
@@ -52,6 +52,11 @@ export function resolveVisionEngine(config) {
   if (!vb || vb.enabled === false) return null;
   if (vb.engine === 'local') {
     if (!vb.local?.baseURL || !vb.local?.model) return null;
+    try {
+      assertSafeBaseURL(vb.local.baseURL);
+    } catch {
+      return null;
+    }
     return { baseURL: vb.local.baseURL.replace(/\/+$/, ''), key: null, model: vb.local.model, label: `local:${vb.local.model}` };
   }
   if (vb.engine && vb.engine !== 'auto') {
