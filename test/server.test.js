@@ -19,7 +19,7 @@ test('models endpoint serves the routed catalog, with and without /v1', async (t
   for (const p of ['/v1/models', '/models']) {
     const data = await (await fetch(`${base}${p}`, { headers: auth })).json();
     const ids = data.data.map((m) => m.id).sort();
-    assert.deepEqual(ids, ['mock/mock-text', 'mock/mock-vision']);
+    assert.deepEqual(ids, ['mock/mock-msg', 'mock/mock-msg-vision', 'mock/mock-text', 'mock/mock-vision']);
   }
 });
 

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { openaiToAnthropicRequest } from './anthropic.js';
 
 // Evidence-contract prompt: the text-only model downstream receives facts,
 // not an impression. The untrusted-content instruction is repeated in the
@@ -56,32 +57,40 @@ export function bodyHasImage(body) {
 }
 
 async function describeImage(engine, imageUrl, fetchImpl) {
-  const resp = await fetchImpl(`${engine.baseURL}/chat/completions`, {
+  const openaiBody = {
+    model: engine.model,
+    stream: false,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: VISION_PROMPT },
+          { type: 'image_url', image_url: { url: imageUrl } },
+        ],
+      },
+    ],
+  };
+  const messagesProtocol = engine.protocol === 'messages';
+  const resp = await fetchImpl(`${engine.baseURL}/${messagesProtocol ? 'messages' : 'chat/completions'}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(engine.key ? { authorization: `Bearer ${engine.key}` } : {}),
+      ...(messagesProtocol
+        ? { 'x-api-key': engine.key || '', 'anthropic-version': '2023-06-01' }
+        : engine.key
+          ? { authorization: `Bearer ${engine.key}` }
+          : {}),
     },
-    body: JSON.stringify({
-      model: engine.model,
-      stream: false,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: VISION_PROMPT },
-            { type: 'image_url', image_url: { url: imageUrl } },
-          ],
-        },
-      ],
-    }),
+    body: JSON.stringify(messagesProtocol ? openaiToAnthropicRequest(openaiBody) : openaiBody),
   });
   if (!resp.ok) {
     const detail = (await resp.text().catch(() => '')).slice(0, 300);
     throw new Error(`vision engine ${engine.label || engine.model} answered HTTP ${resp.status}: ${detail}`);
   }
   const data = await resp.json();
-  const text = data?.choices?.[0]?.message?.content;
+  const text = messagesProtocol
+    ? (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n')
+    : data?.choices?.[0]?.message?.content;
   if (!text) throw new Error(`vision engine ${engine.label || engine.model} returned an empty reading`);
   return typeof text === 'string' ? text : JSON.stringify(text);
 }

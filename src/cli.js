@@ -53,7 +53,7 @@ Providers & models:
   providers                      List providers (enabled, key source, models)
   providers enable|disable <id>  Toggle a provider (${Object.keys(REGISTRY).join(', ')})
   providers key <id> set|clear   Store/remove a provider API key (hidden prompt)
-  providers add-custom <id> --base-url URL --models a,b,c [--vision b]
+  providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]
   providers remove-custom <id>
   models                         List the catalog zCode will see
   models vision <p/m> on|off     Override a model's image support flag
@@ -162,6 +162,8 @@ async function cmdStart(args) {
   const server = await startServer({ config: cfg, log: (m) => err(`[router] ${m}`) });
   log(`zcode-router ${VERSION} listening on http://127.0.0.1:${cfg.port} (loopback only)`);
   printZCodeBlock(cfg);
+  log('\nModels served (copy-paste into zCode if the list does not auto-load):');
+  for (const m of catalog(cfg)) log(`  ${m.id}${m.vision ? '  [vision]' : ''}`);
   const engine = resolveVisionEngine(cfg);
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
   log('Ctrl+C to stop. Keep this running while you use ZCode.');
@@ -318,8 +320,9 @@ async function cmdProviders(rest) {
     const baseURL = flag(tail, '--base-url');
     const models = (flag(tail, '--models') || '').split(',').map((s) => s.trim()).filter(Boolean);
     const vision = new Set((flag(tail, '--vision') || '').split(',').map((s) => s.trim()).filter(Boolean));
+    const messagesProtocol = new Set((flag(tail, '--messages') || '').split(',').map((s) => s.trim()).filter(Boolean));
     if (!id || !baseURL || models.length === 0) {
-      err('Usage: providers add-custom <id> --base-url URL --models a,b,c [--vision b]');
+      err('Usage: providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]');
       process.exitCode = 1;
       return;
     }
@@ -328,7 +331,7 @@ async function cmdProviders(rest) {
       ...(cfg.providers[id] || {}),
       enabled: true,
       baseURL,
-      models: models.map((m) => ({ id: m, vision: vision.has(m) })),
+      models: models.map((m) => ({ id: m, vision: vision.has(m), protocol: messagesProtocol.has(m) ? 'messages' : 'openai' })),
     };
     saveConfig(cfg);
     log(`Custom provider ${id} added (${models.length} models). Store its key: providers key ${id} set`);

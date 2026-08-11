@@ -21,6 +21,16 @@ export const REGISTRY = {
       { id: 'mimo-v2.5-pro', vision: false },
       { id: 'hy3', vision: false },
       { id: 'grok-4.5', vision: true },
+      // opencode Go serves these only over the Anthropic Messages endpoint:
+      { id: 'minimax-m3', vision: false, protocol: 'messages' },
+      { id: 'minimax-m2.7', vision: false, protocol: 'messages' },
+      { id: 'minimax-m2.5', vision: false, protocol: 'messages' },
+      { id: 'qwen3.8-max', vision: false, protocol: 'messages' },
+      { id: 'qwen3.7-max', vision: false, protocol: 'messages' },
+      { id: 'qwen3.7-plus', vision: false, protocol: 'messages' },
+      { id: 'qwen3.6-plus', vision: false, protocol: 'messages' },
+      // gpt-5.6-luna is served only over the OpenAI Responses endpoint, which
+      // this router does not implement.
     ],
   },
   clinepass: {
@@ -75,6 +85,7 @@ export function providerEntry(config, id) {
       enabled: Boolean(user?.enabled),
       storedKey: user?.key || null,
       models: base.models.map((m) => ({
+        protocol: 'openai',
         ...m,
         vision: user?.overrides?.[m.id]?.vision ?? m.vision,
       })),
@@ -90,7 +101,7 @@ export function providerEntry(config, id) {
     enabled: Boolean(user.enabled),
     storedKey: user.key || null,
     models: (user.models || []).map((m) =>
-      typeof m === 'string' ? { id: m, vision: false } : { vision: false, ...m }
+      typeof m === 'string' ? { id: m, vision: false, protocol: 'openai' } : { vision: false, protocol: 'openai', ...m }
     ),
     custom: true,
   };
@@ -147,7 +158,9 @@ export function autoVisionEngine(config) {
   }
   candidates.sort((a, b) => Number(!CHEAP_TIER.test(a.modelId)) - Number(!CHEAP_TIER.test(b.modelId)));
   const first = candidates[0];
-  return first ? { baseURL: first.baseURL, key: first.key, model: first.modelId, label: `${first.provider.id}/${first.modelId}` } : null;
+  return first
+    ? { baseURL: first.baseURL, key: first.key, model: first.modelId, protocol: first.meta.protocol, label: `${first.provider.id}/${first.modelId}` }
+    : null;
 }
 
 export function isLoopback(url) {

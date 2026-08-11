@@ -29,10 +29,14 @@ Then in ZCode: **Settings → Model Settings → Add Provider**, and paste what 
 | --- | --- |
 | Name | `zcode-router` |
 | Base URL | `http://127.0.0.1:4279/v1` |
-| API Key | the loopback key printed by `setup` / `doctor` |
+| API Key | the loopback key printed by `setup` / `doctor` / `start` |
 
-ZCode fetches the model list from the router automatically. Pick e.g.
-`opencode-go/deepseek-v4-flash` in the chat model selector.
+Both protocol choices work — the router speaks **Anthropic Messages** (`/v1/messages`,
+ZCode's default "Anthropic" provider template) and **OpenAI Chat Completions**
+(`/v1/chat/completions`), including streaming and tool calls. ZCode fetches the model list
+from the router automatically; if the list does not load, `zcode-router start` and
+`zcode-router models` print the exact model IDs to paste in manually
+(e.g. `opencode-go/deepseek-v4-flash`).
 
 Requires Node.js ≥ 22. No other dependency. The router binds to `127.0.0.1` only.
 
@@ -48,6 +52,12 @@ built-in mock (`zcode-router selftest`).
 | Provider ID | Endpoint | Key |
 | --- | --- | --- |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` env, or stored |
+
+`opencode-go` covers the full Go catalog: the Chat Completions models (DeepSeek V4, Kimi,
+GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves only over its
+Anthropic Messages endpoint — the router translates both directions, so they work with
+either zCode protocol choice and with the vision bridge. (Go's `gpt-5.6-luna` is served
+only over the OpenAI Responses API, which the router does not implement.)
 | `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` env, or stored |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` env, or stored |
 | `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` env, or stored |
@@ -129,10 +139,13 @@ flowchart LR
 ```
 
 The server speaks the OpenAI Chat Completions API (`GET /v1/models`,
-`POST /v1/chat/completions`, streaming SSE included). Routing is a faithful byte-level
-pass-through: tool calls, streaming, and usage payloads are forwarded untouched — only the
-`model` field is rewritten to the upstream id, the upstream key is injected, and the vision
-bridge rewrites image parts when the target model can't see.
+`POST /v1/chat/completions`) and the Anthropic Messages API (`POST /v1/messages`,
+`POST /v1/messages/count_tokens`), streaming SSE included; Anthropic requests are
+translated to the canonical OpenAI shape, so every upstream provider and the vision bridge
+work identically for both protocols. For OpenAI-protocol clients, routing is a faithful
+byte-level pass-through: tool calls, streaming, and usage payloads are forwarded untouched —
+only the `model` field is rewritten to the upstream id, the upstream key is injected, and
+the vision bridge rewrites image parts when the target model can't see.
 
 ZCode keeps owning the agent loop, tools, permissions, and workspace. The router only does
 inference routing.

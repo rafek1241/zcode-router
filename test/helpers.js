@@ -4,13 +4,55 @@ import { createRouter } from '../src/server.js';
 
 // Shared test rig: mock upstream + router, both on loopback ephemeral ports.
 export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {}) {
-  const state = { requests: [], visionCalls: 0 };
+  const state = { requests: [], visionCalls: 0, anthropicRequests: [] };
   const upstream = http.createServer(
     upstreamHandler ||
       (async (req, res) => {
+        const url = new URL(req.url, 'http://127.0.0.1');
         let raw = '';
         for await (const chunk of req) raw += chunk;
         const body = JSON.parse(raw);
+        if (url.pathname.endsWith('/messages')) {
+          // Mock for messages-protocol upstreams (e.g. opencode Go MiniMax/Qwen).
+          state.anthropicRequests.push(body);
+          const hasImage = body.messages?.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'image'));
+          if (hasImage) state.visionCalls += 1;
+          const text = hasImage ? `VISION-READ(${body.model})` : `REPLY[${body.model}]: ${anthropicLastText(body)}`;
+          const toolUse = body.tools && /call the tool/i.test(anthropicLastText(body));
+          const blocks = [{ type: 'text', text }];
+          if (toolUse) blocks.push({ type: 'tool_use', id: 'toolu_1', name: 'mock_tool', input: { ok: true } });
+          if (body.stream) {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            const ev = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+            res.write(ev('message_start', { type: 'message_start', message: { id: 'msg_mock', type: 'message', role: 'assistant', model: body.model, content: [], usage: { input_tokens: 3, output_tokens: 0 } } }));
+            res.write(ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }));
+            res.write(ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }));
+            res.write(ev('content_block_stop', { type: 'content_block_stop', index: 0 }));
+            if (toolUse) {
+              res.write(ev('content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_1', name: 'mock_tool', input: {} } }));
+              res.write(ev('content_block_delta', { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"ok":true}' } }));
+              res.write(ev('content_block_stop', { type: 'content_block_stop', index: 1 }));
+            }
+            res.write(ev('message_delta', { type: 'message_delta', delta: { stop_reason: toolUse ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } }));
+            res.write(ev('message_stop', { type: 'message_stop' }));
+            res.end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              id: 'msg_mock',
+              type: 'message',
+              role: 'assistant',
+              model: body.model,
+              content: blocks,
+              stop_reason: toolUse ? 'tool_use' : 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 3, output_tokens: 4 },
+            })
+          );
+          return;
+        }
         state.requests.push(body);
         const imagePart = body.messages
           ?.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
@@ -51,6 +93,8 @@ export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {})
         models: [
           { id: 'mock-text', vision: false },
           { id: 'mock-vision', vision: true },
+          { id: 'mock-msg', vision: false, protocol: 'messages' },
+          { id: 'mock-msg-vision', vision: true, protocol: 'messages' },
         ],
       },
     },
@@ -77,6 +121,15 @@ function lastText(body) {
     if (m.role !== 'user') continue;
     if (typeof m.content === 'string') return m.content;
     if (Array.isArray(m.content)) return m.content.filter((p) => p.type === 'text').map((p) => p.text).join(' ');
+  }
+  return '';
+}
+
+function anthropicLastText(body) {
+  for (const m of [...(body.messages || [])].reverse()) {
+    if (m.role !== 'user') continue;
+    if (typeof m.content === 'string') return m.content;
+    if (Array.isArray(m.content)) return m.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ');
   }
   return '';
 }
