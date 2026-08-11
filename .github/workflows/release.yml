@@ -1,0 +1,49 @@
+name: Release
+
+# Publish by pushing a version tag: npm version patch && git push --follow-tags
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write # npm provenance / trusted publishing
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+      - run: npm test
+      - run: npm run selftest
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          [ "$TAG" = "$PKG" ] || { echo "tag $TAG != package.json $PKG"; exit 1; }
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub release
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
