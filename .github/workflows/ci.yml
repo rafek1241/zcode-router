@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+      - name: Selftest (mock provider, no network)
+        run: npm run selftest
+      - name: Cross-platform smoke (start, probe, stop)
+        shell: bash
+        run: |
+          export ZCODE_ROUTER_HOME="$(mktemp -d)"
+          node bin/zcode-router.js providers add-custom demo --base-url http://127.0.0.1:1/v1 --models demo-text
+          node bin/zcode-router.js start --port 4299 &
+          ROUTER_PID=$!
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:4299/health && break || sleep 0.5; done
+          KEY=$(node -p "JSON.parse(require('fs').readFileSync(process.env.ZCODE_ROUTER_HOME + '/config.json','utf8')).localKey")
+          curl -fsS http://127.0.0.1:4299/v1/models -H "Authorization: Bearer $KEY" | grep demo/demo-text
+          node bin/zcode-router.js doctor
+          kill $ROUTER_PID

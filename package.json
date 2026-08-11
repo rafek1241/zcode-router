@@ -1,0 +1,30 @@
+{
+  "name": "zcode-router",
+  "version": "0.1.0",
+  "description": "Local cross-platform model router for ZCode: subscription providers (opencode Go, ClinePass, DeepSeek, Z.ai) with an automatic vision bridge for text-only models.",
+  "type": "module",
+  "bin": {
+    "zcode-router": "bin/zcode-router.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "selftest": "node bin/zcode-router.js selftest"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "keywords": [
+    "zcode",
+    "z.ai",
+    "llm-router",
+    "deepseek",
+    "opencode",
+    "clinepass",
+    "vision-bridge"
+  ],
+  "license": "MIT"
+}
