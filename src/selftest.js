@@ -159,7 +159,8 @@ export async function runSelftest(log = console.log) {
     check('tool calls pass through', toolJson.choices[0].message.tool_calls?.[0]?.function?.name === 'mock_tool');
 
     const unknown = await chat(base, auth, { model: 'mock/nope', messages: [{ role: 'user', content: 'x' }] });
-    check('unknown model rejected', unknown.status === 404);
+    const unknownJson = await unknown.json();
+    check('unknown model passthrough routes', unknown.status === 200 && unknownJson.choices[0].message.content.includes('MOCK-REPLY[nope]'));
 
     mockState.requests.length = 0;
     mockState.visionCalls = 0;
