@@ -40,9 +40,9 @@ jobs:
           PKG=$(node -p "require('./package.json').version")
           [ "$TAG" = "$PKG" ] || { echo "tag $TAG != package.json $PKG"; exit 1; }
       - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm install --global npm@11 # trusted publishing requires npm >= 11.5.1
+          npm publish --provenance --access public
       - name: Create GitHub release
         run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
         env:
