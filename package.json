@@ -1,6 +1,6 @@
 {
   "name": "zcode-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local cross-platform model router for ZCode: subscription providers (opencode Go, ClinePass, DeepSeek, Z.ai) with an automatic vision bridge for text-only models.",
   "type": "module",
   "bin": {
