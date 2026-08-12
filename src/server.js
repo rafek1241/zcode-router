@@ -2,7 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL } from './providers.js';
-import { VisionCache, bodyHasImage, bridgeImages } from './vision.js';
+import { VisionCache, bodyHasImage, bridgeImages, contentShape } from './vision.js';
 import {
   anthropicToOpenai,
   openaiToAnthropic,
@@ -111,16 +111,31 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
       }
 
       if (route === '/models' && req.method === 'GET') {
-        // Union shape: OpenAI (object/created/owned_by) + Anthropic (type/display_name/created_at) fields.
-        const data = catalog(config).map((m) => ({
-          id: m.id,
-          object: 'model',
-          created: 0,
-          owned_by: m.provider,
-          type: 'model',
-          display_name: m.id,
-          created_at: '2026-01-01T00:00:00Z',
-        }));
+        // Union shape: OpenAI + Anthropic fields. ZCode gates screenshot
+        // attachments on modalities.input / supportsImages — without those it
+        // treats the model as text-only, drops the image from the API request,
+        // and the agent tries local OCR instead of the vision bridge.
+        const engine = resolveVisionEngine(config);
+        const data = catalog(config).map((m) => {
+          const images = m.vision || Boolean(engine);
+          return {
+            id: m.id,
+            object: 'model',
+            created: 0,
+            owned_by: m.provider,
+            type: 'model',
+            display_name: m.id,
+            created_at: '2026-01-01T00:00:00Z',
+            supportsImages: images,
+            supports_image_input: images,
+            modalities: { input: images ? ['text', 'image'] : ['text'], output: ['text'] },
+            architecture: {
+              modality: images ? 'text+image->text' : 'text->text',
+              input_modalities: images ? ['text', 'image'] : ['text'],
+              output_modalities: ['text'],
+            },
+          };
+        });
         sendJson(res, 200, { object: 'list', data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
         return;
       }
@@ -180,11 +195,14 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
     // Canonical shape is OpenAI chat completions: translate Anthropic requests
     // first so the vision bridge works identically for both protocols.
     const body = anthropic ? anthropicToOpenai(clientBody) : clientBody;
+    const shape = contentShape(body);
 
     if (!route.meta.vision && bodyHasImage(body)) {
       const engine = resolveVisionEngine(config);
       if (engine) {
         await bridgeImages(body, engine, visionCache, { fetchImpl, log });
+      } else {
+        log(`vision-bridge: images present but no engine (shape ${shape})`);
       }
     }
 
@@ -210,7 +228,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
       return;
     }
 
-    log(`${body.stream ? 'stream' : 'once'} ${anthropic ? 'messages' : 'chat'} ${requestedModel} -> ${route.provider.id}/${route.modelId} [${upstream.status}]`);
+    log(`${body.stream ? 'stream' : 'once'} ${anthropic ? 'messages' : 'chat'} ${requestedModel} -> ${route.provider.id}/${route.modelId} [${upstream.status}] ${shape}`);
 
     if (!anthropic && !messagesUpstream) {
       // OpenAI-protocol client, OpenAI-protocol upstream: faithful byte pass-through.

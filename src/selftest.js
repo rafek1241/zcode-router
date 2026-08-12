@@ -140,6 +140,8 @@ export async function runSelftest(log = console.log) {
     const models = await (await fetch(`${base}/v1/models`, { headers: auth })).json();
     const ids = models.data.map((m) => m.id);
     check('catalog lists routed models', ids.includes('mock/mock-text') && ids.includes('mock/mock-vision'), ids.join(', '));
+    const textModel = models.data.find((m) => m.id === 'mock/mock-text');
+    check('catalog advertises image input on bridged text-only models', textModel?.supportsImages === true && textModel?.modalities?.input?.includes('image'));
 
     const once = await chat(base, auth, { model: 'mock/mock-text', messages: [{ role: 'user', content: 'hello router' }] });
     check('non-streaming chat completion', once.status === 200 && (await once.json()).choices[0].message.content.includes('hello router'));

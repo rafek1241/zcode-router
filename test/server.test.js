@@ -23,6 +23,27 @@ test('models endpoint serves the routed catalog, with and without /v1', async (t
   }
 });
 
+test('models advertise image input on text-only entries when the vision bridge has an engine', async (t) => {
+  const { base, auth } = await makeRig(t);
+  const data = await (await fetch(`${base}/v1/models`, { headers: auth })).json();
+  const text = data.data.find((m) => m.id === 'mock/mock-text');
+  assert.equal(text.supportsImages, true);
+  assert.deepEqual(text.modalities.input, ['text', 'image']);
+  assert.ok(text.architecture.input_modalities.includes('image'));
+});
+
+test('models stay text-only when the vision bridge is off', async (t) => {
+  const { base, auth, config } = await makeRig(t);
+  config.visionBridge.enabled = false;
+  const data = await (await fetch(`${base}/v1/models`, { headers: auth })).json();
+  const text = data.data.find((m) => m.id === 'mock/mock-text');
+  const vision = data.data.find((m) => m.id === 'mock/mock-vision');
+  assert.equal(text.supportsImages, false);
+  assert.deepEqual(text.modalities.input, ['text']);
+  assert.equal(vision.supportsImages, true);
+  assert.deepEqual(vision.modalities.input, ['text', 'image']);
+});
+
 test('non-streaming chat completion is proxied with model rewrite', async (t) => {
   const { chat, state } = await makeRig(t);
   const res = await chat({ model: 'mock/mock-text', messages: [{ role: 'user', content: 'hello' }] });
@@ -179,4 +200,45 @@ test('hostile vision output cannot break the fence', async (t) => {
   const payloadIdx = evidence.text.indexOf(payload);
   const endIdx = evidence.text.lastIndexOf(`END-IMAGE-DATA-${begin[1]}`);
   assert.ok(beginIdx !== -1 && beginIdx < payloadIdx && payloadIdx < endIdx, 'payload stays inside the real fence');
+});
+
+test('vision bridge accepts image_url as a bare string', async (t) => {
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: PNG_1PX }] }],
+    })
+  ).json();
+  const parts = state.requests.find((r) => r.model === 'mock-text').messages[0].content;
+  assert.ok(!parts.some((p) => p.type === 'image_url'));
+  assert.ok(parts.some((p) => p.type === 'text' && p.text.includes('VISION-READ(mock-vision)')));
+});
+
+test('vision bridge accepts Anthropic image blocks on the OpenAI protocol', async (t) => {
+  const { chat, state } = await makeRig(t);
+  const b64 = PNG_1PX.split(',')[1];
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } }] }],
+    })
+  ).json();
+  const parts = state.requests.find((r) => r.model === 'mock-text').messages[0].content;
+  assert.ok(parts.some((p) => p.type === 'text' && p.text.includes('VISION-READ(mock-vision)')));
+});
+
+test('vision bridge extracts a data URL embedded in a string message', async (t) => {
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: `what is this?\n${PNG_1PX}` }],
+    })
+  ).json();
+  const forwarded = state.requests.find((r) => r.model === 'mock-text');
+  const content = forwarded.messages[0].content;
+  const blob = typeof content === 'string' ? content : content.map((p) => p.text || '').join('\n');
+  assert.doesNotMatch(blob, /data:image/);
+  assert.match(blob, /VISION-READ\(mock-vision\)/);
 });

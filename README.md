@@ -52,15 +52,15 @@ built-in mock (`zcode-router selftest`).
 | Provider ID | Endpoint | Key |
 | --- | --- | --- |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` env, or stored |
+| `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` env, or stored |
+| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` env, or stored |
+| `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` env, or stored |
 
 `opencode-go` covers the full Go catalog: the Chat Completions models (DeepSeek V4, Kimi,
 GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves only over its
 Anthropic Messages endpoint — the router translates both directions, so they work with
 either zCode protocol choice and with the vision bridge. (Go's `gpt-5.6-luna` is served
 only over the OpenAI Responses API, which the router does not implement.)
-| `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` env, or stored |
-| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` env, or stored |
-| `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` env, or stored |
 
 Environment variables win over stored keys. Keys are stored in
 `~/.zcode-router/config.json` with mode `0600` (POSIX) or a current-user-only ACL (Windows),
@@ -87,6 +87,12 @@ On by default. When a request for a **text-only** model contains an image, the r
 If no engine is available, nothing changes: the provider refuses the paste exactly as it
 would without the router. If the engine errors, the model is told the image could not be
 read instead of being left to invent its contents.
+
+The catalog advertises image input on every routed model while a vision engine is
+configured — otherwise zCode treats DeepSeek as text-only, never puts the screenshot in
+the API request, and the agent tries local OCR instead. After changing this, **Refresh
+the provider in zCode, fully quit the app, and start a new chat**; zCode caches
+`modalities.input` in `~/.zcode/v2/config.json`.
 
 ```sh
 zcode-router vision-bridge                      # status

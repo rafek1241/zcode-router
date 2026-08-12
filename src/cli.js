@@ -163,9 +163,15 @@ async function cmdStart(args) {
   log(`zcode-router ${VERSION} listening on http://127.0.0.1:${cfg.port} (loopback only)`);
   printZCodeBlock(cfg);
   log('\nModels served (copy-paste into zCode if the list does not auto-load):');
-  for (const m of catalog(cfg)) log(`  ${m.id}${m.vision ? '  [vision]' : ''}`);
   const engine = resolveVisionEngine(cfg);
+  for (const m of catalog(cfg)) {
+    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+    log(`  ${m.id}  ${tag}`);
+  }
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
+  if (engine) {
+    log('zCode caches model capabilities: click Refresh on the provider, fully quit zCode, and start a new chat so it re-reads image support.');
+  }
   log('Ctrl+C to stop. Keep this running while you use ZCode.');
   checkForUpdate(cfg).catch(() => {});
   process.on('SIGINT', () => { server.close(); process.exit(0); });
@@ -178,7 +184,8 @@ ZCode setup (Settings → Model Settings → Add Provider):
   Name:     zcode-router
   Base URL: http://127.0.0.1:${cfg.port}/v1
   API Key:  ${cfg.localKey}
-zCode will fetch the model list automatically. The key is loopback-only — do not share it.`);
+zCode will fetch the model list automatically. The key is loopback-only — do not share it.
+After changing the router, click Refresh on this provider and start a new chat — zCode caches whether a model accepts images.`);
 }
 
 // ---------- doctor ----------
@@ -386,7 +393,11 @@ function cmdModels(rest) {
     log('(no routable models — run `zcode-router setup`)');
     return;
   }
-  for (const m of items) log(`${m.id}  ${m.vision ? '[vision]' : '[text-only]'}`);
+  const engine = resolveVisionEngine(cfg);
+  for (const m of items) {
+    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+    log(`${m.id}  ${tag}`);
+  }
 }
 
 function noConfig() {
