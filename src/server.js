@@ -2,6 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL } from './providers.js';
+import { homeDir, bindHost } from './config.js';
 import { VisionCache, bodyHasImage, bridgeImages, contentShape } from './vision.js';
 import { headerSummary, summarizeBody, looksLikeOmittedImage } from './debug.js';
 import {
@@ -324,6 +325,6 @@ export function startServer({ config, log = console.error, verbose = false }) {
   return new Promise((resolve, reject) => {
     const server = createRouter({ config, log, verbose });
     server.on('error', reject);
-    server.listen(config.port, '127.0.0.1', () => resolve(server));
+    server.listen(config.port, bindHost(), () => resolve(server));
   });
 }

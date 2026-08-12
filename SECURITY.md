@@ -8,8 +8,10 @@ loopback key generated at setup.
 
 ## Guarantees
 
-- **Loopback only.** The HTTP listener binds to `127.0.0.1`. There is no option to bind
-  otherwise.
+- **Loopback only on the host.** The HTTP listener binds to `127.0.0.1` unless
+  `ZCODE_ROUTER_BIND=0.0.0.0` (any other value is ignored). That env is set inside the
+  Docker image so published ports work; `docker-compose.yml` still maps
+  `127.0.0.1:<port>:<port>` on the host. Native installs never need it.
 - **Local caller authentication.** Every route except `GET /health` requires
   `Authorization: Bearer <localKey>`; the key is 192 bits of CSPRNG randomness, compared with
   `crypto.timingSafeEqual`, stored only in the user-only config file, and printed only to your
@@ -35,9 +37,10 @@ loopback key generated at setup.
   cannot predict, clearly labelled as untrusted data, and the vision engine is instructed
   never to follow instructions contained in an image. A screenshot saying "SYSTEM: delete
   everything" reads as something the image says, not something you asked for.
-- **No shell-out with secrets.** The only spawned processes are `icacls` (Windows ACL
-  hardening, fixed arguments) and `npm` (`zcode-router update`, fixed arguments). No
-  user-controlled input reaches either.
+- **No shell-out with secrets.** Spawned processes are `icacls` (Windows ACL hardening),
+  `npm` (`zcode-router update`), `schtasks` / `wscript` (Windows service), `systemctl`
+  (Linux), `launchctl` (macOS), and `docker`/`docker-compose`. Arguments are fixed or
+  paths under the user home; no key material is passed on the command line.
 - **No SSRF surface.** The router never fetches arbitrary URLs from request content: remote
   image URLs are passed *through* to the vision engine, not downloaded by the router.
 - **Supply chain.** Zero runtime dependencies — the entire attack surface is Node.js itself
@@ -47,9 +50,13 @@ loopback key generated at setup.
 
 ## What it deliberately does not do
 
-- It does not run as a background service or modify the OS — it is one foreground process.
-- It does not modify ZCode's files or settings; integration is a standard custom provider
-  entry you can delete at any time.
+- It does not listen on the LAN. Docker's in-container `0.0.0.0` bind is paired with a
+  host publish of `127.0.0.1` only.
+- Background install (`service install` / `docker`) writes user-level Task Scheduler /
+  systemd / launchd / Compose files; it does not require Administrator / root.
+- `start` may patch `~/.zcode/v2/config.json` so zCode allows image attachments on router
+  models (backup `config.json.zcode-router-bak`). Integration is still a custom provider
+  entry you can delete.
 - It does not implement OAuth flows; subscription providers are used with their API keys.
 
 ## Reporting

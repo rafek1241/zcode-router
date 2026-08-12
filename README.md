@@ -19,9 +19,14 @@ no Python, no LiteLLM, no WSL, no build step.
 ```sh
 npm install -g zcode-router
 zcode-router selftest   # full end-to-end check against a built-in mock provider — no API key needed
-zcode-router setup      # pick providers, paste keys (hidden prompt)
-zcode-router start      # keep running while you use ZCode
+zcode-router setup      # pick providers, paste keys, then install a background runner
 ```
+
+`setup` asks how to keep the API running (ZCode needs it as a provider the whole time you work):
+
+1. **Native service** — Windows Task Scheduler + hidden `.vbs` (ONLOGON), Linux `systemd --user`, macOS launchd.
+2. **Docker** — copies this npm package into a `node:22-alpine` image, `restart: unless-stopped`, publishes `127.0.0.1:4279`. Same after setup: `npx zcode-router docker`.
+3. **Manual** — `zcode-router start` in a terminal.
 
 Then in ZCode: **Settings → Model Settings → Add Provider**, and paste what `setup` printed:
 
@@ -132,12 +137,16 @@ zcode-router doctor            # verify everything; prints the zCode settings bl
 zcode-router doctor --probe    # also ping each provider's free /models endpoint
 zcode-router providers         # what is enabled, where keys come from
 zcode-router models            # the catalog ZCode will see
+zcode-router service install   # Task Scheduler / systemd / launchd (also offered by setup)
+zcode-router service stop
+zcode-router docker            # compose up --build; auto-restart. Requires Docker Desktop / compose
+zcode-router docker down
 zcode-router update            # npm self-update (auto-checked once a day on `start`)
 ```
 
-The router runs in the foreground — keep the terminal open, or background it your platform's
-way (Task Scheduler / `pm2` / `systemd --user`). It is a single process; there is no service
-installer to go wrong on Windows.
+After `zcode-router update`, re-run `service install` or `docker` so the background runner picks up the new files.
+
+Do not run the native service and Docker on the same port at once.
 
 ## How it works
 

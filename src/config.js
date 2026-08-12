@@ -10,6 +10,36 @@ export function homeDir() {
   return process.env.ZCODE_ROUTER_HOME || path.join(os.homedir(), '.zcode-router');
 }
 
+export function pidPath() {
+  return path.join(homeDir(), 'router.pid');
+}
+
+export function clearPidfile() {
+  try {
+    fs.unlinkSync(pidPath());
+  } catch {
+    /* missing is fine */
+  }
+}
+
+export function killFromPidfile() {
+  try {
+    const pid = Number(fs.readFileSync(pidPath(), 'utf8').trim());
+    if (Number.isInteger(pid) && pid > 1 && pid !== process.pid) process.kill(pid);
+  } catch {
+    /* gone, not a pid, or not ours */
+  }
+  clearPidfile();
+}
+
+// Native installs bind loopback. Docker publishes 127.0.0.1:port on the host
+// and must listen on 0.0.0.0 inside the container (ZCODE_ROUTER_BIND=0.0.0.0).
+export function bindHost() {
+  const raw = process.env.ZCODE_ROUTER_BIND;
+  if (raw === '0.0.0.0') return '0.0.0.0';
+  return '127.0.0.1';
+}
+
 export function configPath() {
   return path.join(homeDir(), 'config.json');
 }
