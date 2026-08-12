@@ -161,9 +161,9 @@ test('messages: upstream errors surface in Anthropic error shape', async (t) => 
   assert.match(json.error.message, /quota exhausted/);
 });
 
-test('messages: unknown model lists available models in Anthropic shape', async (t) => {
+test('messages: unknown provider lists available models in Anthropic shape', async (t) => {
   const { base, config } = await makeRig(t);
-  const res = await msg(base, config, { model: 'mock/nope', max_tokens: 64, messages: [{ role: 'user', content: 'x' }] });
+  const res = await msg(base, config, { model: 'nobody/nope', max_tokens: 64, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 404);
   const json = await res.json();
   assert.equal(json.error.type, 'not_found_error');

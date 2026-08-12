@@ -55,12 +55,33 @@ test('auto vision engine prefers cheap tiers and needs vision+key', () => {
     'opencode-go': { enabled: true, key: 'sk-oc' },
   });
   const engine = autoVisionEngine(cfg);
-  assert.equal(engine.label, 'opencode-go/grok-4.5', 'only vision-flagged opencode-go model');
+  assert.equal(engine.label, 'opencode-go/minimax-m3', 'cheapest vision-flagged opencode-go model');
 });
 
 test('auto vision engine returns null with no vision models', () => {
   const cfg = cfgWith({ deepseek: { enabled: true, key: 'sk' } });
   assert.equal(autoVisionEngine(cfg), null);
+});
+
+test('unknown model ids passthrough an enabled provider', () => {
+  const cfg = cfgWith({ 'opencode-go': { enabled: true, key: 'sk-oc' } });
+  const route = resolveModel(cfg, 'opencode-go/brand-new-model');
+  assert.equal(route.modelId, 'brand-new-model');
+  assert.equal(route.meta.vision, false, 'conservative default for unknown models');
+  assert.equal(route.meta.protocol, 'openai');
+  assert.equal(route.baseURL, 'https://opencode.ai/zen/go/v1');
+  assert.equal(resolveModel(cfg, 'nobody/brand-new-model'), null);
+  assert.equal(resolveModel(cfg, 'clinepass/brand-new-model'), null, 'provider not enabled');
+});
+
+test('models added via config extra appear in the catalog with protocol', () => {
+  const cfg = cfgWith({
+    'opencode-go': { enabled: true, key: 'sk-oc', extra: [{ id: 'shiny-new', vision: true, protocol: 'messages' }] },
+  });
+  assert.ok(catalog(cfg).map((m) => m.id).includes('opencode-go/shiny-new'));
+  const route = resolveModel(cfg, 'opencode-go/shiny-new');
+  assert.equal(route.meta.vision, true);
+  assert.equal(route.meta.protocol, 'messages');
 });
 
 test('base URL policy: https or loopback only', () => {

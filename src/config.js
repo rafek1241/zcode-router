@@ -10,6 +10,13 @@ export function homeDir() {
   return process.env.ZCODE_ROUTER_HOME || path.join(os.homedir(), '.zcode-router');
 }
 
+// `npx` / `npm exec` run from a temporary cache (~/.npm/_npx/…) that npm
+// cleans up whenever it wants. Anything that must keep working after the
+// download is gone (services, manual runs) must not depend on files there.
+export function isNpxCachePath(p) {
+  return p.split(path.sep).includes('_npx');
+}
+
 export function pidPath() {
   return path.join(homeDir(), 'router.pid');
 }
@@ -51,7 +58,7 @@ export function defaultConfig() {
     localKey: crypto.randomBytes(24).toString('base64url'),
     port: DEFAULT_PORT,
     providers: {},
-    visionBridge: { enabled: true, engine: 'auto', local: null },
+    visionBridge: { enabled: true, engine: 'opencode-go/minimax-m3', local: null },
   };
 }
 

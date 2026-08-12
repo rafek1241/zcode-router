@@ -3,15 +3,17 @@ import path from 'node:path';
 import net from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile } from './config.js';
+import { fileURLToPath } from 'node:url';
+import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile, isNpxCachePath } from './config.js';
 import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, isLoopback } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
 import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
-import { describeServiceTarget, installService, serviceStatus, startService, stopService, uninstallService } from './service.js';
+import { describeServiceTarget, installService, serviceStatus, startService, stopService, uninstallService, localDir } from './service.js';
 import { dockerDown, dockerFilesPresent, dockerStatus, installDocker } from './docker.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+const runningFromNpxCache = isNpxCachePath(fileURLToPath(import.meta.url));
 
 const log = (...a) => console.log(...a);
 const err = (...a) => console.error(...a);
@@ -51,9 +53,12 @@ Usage: zcode-router <command>
 
 Getting started:
   setup                          Guided setup: pick providers, keys, then background runner
+                                 (service and docker copy the router to a permanent location;
+                                 manual mode needs a permanent install, not an npx cache)
   start [--port N] [--verbose]   Run the router on 127.0.0.1 (default port ${DEFAULT_PORT})
   service install|uninstall|status|start|stop
-                                 Native background runner (Task Scheduler .vbs / systemd / launchd)
+                                 Native background runner (Task Scheduler .vbs / systemd / launchd),
+                                 runs from a self-contained copy in ${localDir()}
   docker [up|down|status]        Docker Compose (restart: unless-stopped). Default: up
   doctor [--probe]               Verify config and print the exact zCode settings
   selftest                       Full end-to-end check against a mock provider (no API key needed)
@@ -66,6 +71,10 @@ Providers & models:
   providers remove-custom <id>
   models                         List the catalog zCode will see
   models vision <p/m> on|off     Override a model's image support flag
+  models add <p/m> [--vision] [--protocol messages]
+                                 List a model that is not in the registry (new upstream
+                                 models route through enabled providers anyway)
+  models remove <p/m>            Remove a model added with \`models add\`
 
 Vision bridge (images -> vision model -> text evidence for text-only models):
   vision-bridge                  Status
@@ -122,13 +131,25 @@ async function cmdSetup() {
     log('\nKeep the router running so ZCode can always reach it?');
     log(`  1) Native background service — ${describeServiceTarget()}`);
     log('  2) Docker (compose, restart: unless-stopped; ZCode still uses http://127.0.0.1)');
-    log('  3) No — I will run `zcode-router start` myself');
-    const mode = (await ask('Choice [1]: ')).trim() || '1';
+    log('  3) Manual — I will run `zcode-router start` myself');
+    if (runningFromNpxCache) {
+      log('     (unavailable here: npx runs from a temporary cache — manual mode needs a permanent install, see below)');
+    }
+    let mode = (await ask('Choice [1]: ')).trim() || '1';
+    while (runningFromNpxCache && mode !== '1' && mode !== '2') {
+      log('\nManual mode cannot run from `npx`: npx downloaded this package into a temporary cache');
+      log('that gets cleaned up, so `zcode-router start` would silently stop working later.');
+      log('To use manual mode, install a permanent copy first (npm install -g zcode-router),');
+      log('then run `zcode-router setup` again — or pick 1 (service) or 2 (docker) here:');
+      log('both copy the router out of the npx cache and keep working on their own.');
+      mode = (await ask('Choice [1]: ')).trim() || '1';
+    }
     if (mode === '1') {
       try {
         installService();
         log(`Background service installed. ${describeServiceTarget()}`);
-        log('Stop later with `zcode-router service stop` (or uninstall).');
+        log(`It runs from a self-contained copy in ${localDir()} — independent of npm/npx caches.`);
+        log('Stop later with `zcode-router service stop` (or uninstall). Re-run `zcode-router service install` after `zcode-router update`.');
       } catch (e) {
         err(`Could not install background service: ${e.message}`);
         log('Start manually with `zcode-router start`, or retry `zcode-router service install`.');
@@ -153,6 +174,11 @@ async function cmdSetup() {
 // ---------- start ----------
 
 async function cmdStart(args) {
+  if (runningFromNpxCache) {
+    err('\nwarning: you are running from a temporary `npx` cache — npm may delete these files');
+    err('while the router is still serving. Prefer `zcode-router setup` and pick a background');
+    err('runner (service/docker), or install a permanent copy with `npm install -g zcode-router`.\n');
+  }
   const cfg = loadConfig();
   if (!cfg) {
     err(`No config at ${configPath()} yet. Run \`zcode-router setup\` first.`);
@@ -239,6 +265,7 @@ function cmdService(rest) {
       try {
         installService();
         log(`Installed. ${describeServiceTarget()}`);
+        log(`Runs from a self-contained copy in ${localDir()} — re-run \`zcode-router service install\` after \`zcode-router update\` to refresh it.`);
       } catch (e) {
         err(e.message);
         process.exitCode = 1;
@@ -419,6 +446,7 @@ async function cmdDoctor(args) {
   }
   log(`INFO  zCode config: ${zcodeConfigPath()}${fs.existsSync(zcodeConfigPath()) ? '' : ' (not found)'}`);
   log(`INFO  background service: ${serviceStatus().installed ? 'installed' : 'not installed'} — ${describeServiceTarget()}`);
+  log(`INFO  service snapshot: ${fs.existsSync(path.join(localDir(), 'bin', 'zcode-router.js')) ? `present in ${localDir()}` : 'none'}`);
   log(`INFO  docker: ${dockerFilesPresent() ? `compose files in ${path.join(homeDir(), 'docker')}` : 'not installed'}`);
 
   finish();
@@ -550,6 +578,43 @@ function cmdModels(rest) {
     log(`${target}: vision ${value}.`);
     return;
   }
+  if (sub === 'add' || sub === 'remove') {
+    if (!cfg) return noConfig();
+    const slash = target?.indexOf('/') ?? -1;
+    if (slash <= 0) {
+      err(`Usage: models ${sub} <provider/model>${sub === 'add' ? ' [--vision] [--protocol messages]' : ''}`);
+      process.exitCode = 1;
+      return;
+    }
+    const pid = target.slice(0, slash);
+    const mid = target.slice(slash + 1);
+    const entry = providerEntry(cfg, pid);
+    if (!entry) return unknownProvider(target);
+    cfg.providers[pid] = cfg.providers[pid] || {};
+    if (sub === 'add') {
+      const spec = { id: mid, vision: rest.includes('--vision'), protocol: flag(rest, '--protocol') === 'messages' ? 'messages' : 'openai' };
+      const extra = cfg.providers[pid].extra || [];
+      const existing = extra.findIndex((m) => (typeof m === 'string' ? m : m.id) === mid);
+      if (existing === -1) extra.push(spec);
+      else extra[existing] = spec;
+      cfg.providers[pid].extra = extra;
+      saveConfig(cfg);
+      log(`${target} added (${spec.protocol}${spec.vision ? ', vision' : ''}) — appears in zCode after Refresh.`);
+      return;
+    }
+    const extra = cfg.providers[pid].extra || [];
+    const idx = extra.findIndex((m) => (typeof m === 'string' ? m : m.id) === mid);
+    if (idx === -1) {
+      err(`${target} is not an added model (registry models cannot be removed).`);
+      process.exitCode = 1;
+      return;
+    }
+    extra.splice(idx, 1);
+    cfg.providers[pid].extra = extra;
+    saveConfig(cfg);
+    log(`${target} removed.`);
+    return;
+  }
   if (!cfg) return noConfig();
   const items = catalog(cfg);
   if (items.length === 0) {
@@ -628,7 +693,11 @@ function cmdUpdate() {
   const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '-g', 'zcode-router@latest'], { stdio: 'inherit' });
   child.on('exit', (code) => {
     process.exitCode = code ?? 1;
-    if (code === 0) log('Updated. Restart any running router to use the new version.');
+    if (code === 0) {
+      log('Updated. If you use a background runner, refresh it so it picks up the new files:');
+      log('  zcode-router service install   (or:  zcode-router docker)');
+      log('Otherwise just restart `zcode-router start`.');
+    }
   });
 }
 
