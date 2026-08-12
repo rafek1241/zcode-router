@@ -86,6 +86,16 @@ Kimi, GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves o
 over its Anthropic Messages endpoint — the router translates both directions, so they
 work with either zCode protocol choice and with the vision bridge.
 
+The curated list is a starting point, not a gate: any `provider/model` on an enabled,
+keyed provider routes through — so when an upstream ships a new model, just type its
+ID in zCode (e.g. `opencode-go/new-model`) and the router forwards it. To also make it
+appear in the model list and pin its capabilities:
+
+```sh
+zcode-router models add opencode-go/new-model --vision --protocol messages
+zcode-router models remove opencode-go/new-model
+```
+
 Environment variables win over stored keys. Keys entered during `setup` are stored in
 `~/.zcode-router/config.json` and never leave your machine (see Security).
 

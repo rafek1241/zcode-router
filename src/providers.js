@@ -68,6 +68,14 @@ export function providerEntry(config, id) {
   const user = config?.providers?.[id];
   if (!base && !user) return null;
   if (base) {
+    const extra = (user?.extra || []).map((m) => {
+      const e = typeof m === 'string' ? { id: m } : m;
+      return {
+        id: e.id,
+        vision: user?.overrides?.[e.id]?.vision ?? e.vision ?? false,
+        protocol: e.protocol || 'openai',
+      };
+    });
     return {
       id,
       label: base.label,
@@ -75,11 +83,14 @@ export function providerEntry(config, id) {
       keyEnv: base.keyEnv,
       enabled: Boolean(user?.enabled),
       storedKey: user?.key || null,
-      models: base.models.map((m) => ({
-        protocol: 'openai',
-        ...m,
-        vision: user?.overrides?.[m.id]?.vision ?? m.vision,
-      })),
+      models: [
+        ...base.models.map((m) => ({
+          protocol: 'openai',
+          ...m,
+          vision: user?.overrides?.[m.id]?.vision ?? m.vision,
+        })),
+        ...extra,
+      ],
       custom: false,
     };
   }
@@ -130,10 +141,13 @@ export function resolveModel(config, routedId) {
   const modelId = routedId.slice(slash + 1);
   const entry = providerEntry(config, providerId);
   if (!entry || !entry.enabled) return null;
-  const meta = entry.models.find((m) => m.id === modelId);
-  if (!meta) return null;
   const { key } = resolveKey(entry);
   if (!key && !isLoopback(entry.baseURL)) return null;
+  // Passthrough: models not in the curated list still route. The router is a
+  // byte-level proxy, and upstreams ship new models before the registry does —
+  // typing `provider/new-model` in zCode just works (vision: false is the
+  // conservative default; pin it with `models add ... --vision` if needed).
+  const meta = entry.models.find((m) => m.id === modelId) || { id: modelId, vision: false, protocol: 'openai' };
   return { provider: entry, modelId, meta, key, baseURL: entry.baseURL.replace(/\/+$/, '') };
 }
 

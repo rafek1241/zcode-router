@@ -79,9 +79,16 @@ test('tool calls survive the round trip', async (t) => {
   assert.ok(state.requests[0].tools, 'tools forwarded upstream');
 });
 
-test('unknown model gets a 404 listing available models', async (t) => {
+test('unknown model ids on an enabled provider route through (passthrough)', async (t) => {
+  const { chat, state } = await makeRig(t);
+  const res = await chat({ model: 'mock/shiny-new', messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(res.status, 200);
+  assert.equal(state.requests.at(-1).model, 'shiny-new');
+});
+
+test('unknown provider gets a 404 listing available models', async (t) => {
   const { chat } = await makeRig(t);
-  const res = await chat({ model: 'mock/nope', messages: [{ role: 'user', content: 'x' }] });
+  const res = await chat({ model: 'nobody/nope', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 404);
   const json = await res.json();
   assert.match(json.error.message, /mock\/mock-text/);
