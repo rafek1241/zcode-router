@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { darwinPlistText, linuxUnitText, windowsScripts } from '../src/service.js';
+import { darwinPlistText, linuxUnitText, windowsScripts, snapshotLocalPackage, localDir } from '../src/service.js';
 import { composeYaml, dockerfileText, writeDockerFiles } from '../src/docker.js';
 import { defaultConfig, saveConfig } from '../src/config.js';
 
@@ -59,6 +59,19 @@ test('compose publishes loopback only and binds 0.0.0.0 inside the container', (
   assert.match(df, /FROM node:22-alpine/);
   assert.match(df, /ZCODE_ROUTER_BIND=0\.0\.0\.0/);
   assert.match(df, /bin\/zcode-router\.js", "start"/);
+});
+
+test('snapshotLocalPackage copies the package into ~/.zcode-router/local', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-local-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  process.env.ZCODE_ROUTER_HOME = dir;
+  t.after(() => delete process.env.ZCODE_ROUTER_HOME);
+  const snap = snapshotLocalPackage();
+  assert.equal(snap, path.join(dir, 'local'));
+  assert.equal(localDir(), path.join(dir, 'local'));
+  assert.equal(fs.existsSync(path.join(snap, 'package.json')), true);
+  assert.equal(fs.existsSync(path.join(snap, 'bin', 'zcode-router.js')), true);
+  assert.equal(fs.existsSync(path.join(snap, 'src', 'cli.js')), true);
 });
 
 test('writeDockerFiles copies the local package into ~/.zcode-router/docker', (t) => {

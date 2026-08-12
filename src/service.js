@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,6 @@ export const LINUX_UNIT = 'zcode-router.service';
 export const DARWIN_LABEL = 'com.zcode-router';
 
 const pkgRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
-const entry = join(pkgRoot, 'bin', 'zcode-router.js');
 
 export function startCmdPath() {
   return join(homeDir(), 'start.cmd');
@@ -26,6 +25,34 @@ export function linuxUnitPath() {
 
 export function darwinPlistPath() {
   return join(homedir(), 'Library', 'LaunchAgents', `${DARWIN_LABEL}.plist`);
+}
+
+// Self-contained copy of the package (bin + src) in the state dir. The
+// service runs from here, so it survives npm cache cleanups, `npx` cache
+// eviction, and global re-installs — like the Docker image, it no longer
+// depends on where the package was downloaded from.
+export function localDir() {
+  return join(homeDir(), 'local');
+}
+
+function copyTree(from, to) {
+  mkdirSync(to, { recursive: true });
+  for (const ent of readdirSync(from, { withFileTypes: true })) {
+    if (ent.name === 'node_modules' || ent.name === '.git') continue;
+    const src = join(from, ent.name);
+    const dest = join(to, ent.name);
+    if (ent.isDirectory()) copyTree(src, dest);
+    else copyFileSync(src, dest);
+  }
+}
+
+export function snapshotLocalPackage() {
+  const dir = localDir();
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(join(pkgRoot, 'package.json'), join(dir, 'package.json'));
+  copyTree(join(pkgRoot, 'bin'), join(dir, 'bin'));
+  copyTree(join(pkgRoot, 'src'), join(dir, 'src'));
+  return dir;
 }
 
 function quoteWin(p) {
@@ -128,6 +155,7 @@ export function installService() {
   mkdirSync(homeDir(), { recursive: true });
   const node = process.execPath;
   const home = homeDir();
+  const entry = join(snapshotLocalPackage(), 'bin', 'zcode-router.js');
   if (process.platform === 'win32') {
     const { cmd, vbs } = windowsScripts({ node, script: entry, home, cmdPath: startCmdPath() });
     writeFileSync(startCmdPath(), cmd);

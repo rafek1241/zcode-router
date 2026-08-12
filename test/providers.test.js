@@ -55,7 +55,7 @@ test('auto vision engine prefers cheap tiers and needs vision+key', () => {
     'opencode-go': { enabled: true, key: 'sk-oc' },
   });
   const engine = autoVisionEngine(cfg);
-  assert.equal(engine.label, 'opencode-go/grok-4.5', 'only vision-flagged opencode-go model');
+  assert.equal(engine.label, 'opencode-go/minimax-m3', 'cheapest vision-flagged opencode-go model');
 });
 
 test('auto vision engine returns null with no vision models', () => {

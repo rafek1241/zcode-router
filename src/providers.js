@@ -22,7 +22,7 @@ export const REGISTRY = {
       { id: 'hy3', vision: false },
       { id: 'grok-4.5', vision: true },
       // opencode Go serves these only over the Anthropic Messages endpoint:
-      { id: 'minimax-m3', vision: false, protocol: 'messages' },
+      { id: 'minimax-m3', vision: true, protocol: 'messages' },
       { id: 'minimax-m2.7', vision: false, protocol: 'messages' },
       { id: 'minimax-m2.5', vision: false, protocol: 'messages' },
       { id: 'qwen3.8-max', vision: false, protocol: 'messages' },
@@ -59,15 +59,6 @@ export const REGISTRY = {
     models: [
       { id: 'deepseek-v4-flash', vision: false },
       { id: 'deepseek-v4-pro', vision: false },
-    ],
-  },
-  'zai-coding': {
-    label: 'Z.ai GLM Coding Plan (subscription)',
-    baseURL: 'https://api.z.ai/api/coding/paas/v4',
-    keyEnv: ['ZAI_API_KEY', 'Z_AI_API_KEY'],
-    models: [
-      { id: 'glm-5.2', vision: false },
-      { id: 'glm-5-turbo', vision: false },
     ],
   },
 };

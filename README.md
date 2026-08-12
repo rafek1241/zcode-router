@@ -1,34 +1,65 @@
 # zcode-router
 
-Local, cross-platform model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
+Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
-It lets you point ZCode at **subscription providers** like **opencode Go** or **ClinePass**
-(and plain APIs like DeepSeek or the Z.ai GLM Coding Plan) through one loopback endpoint —
-and it adds the missing superpower: a **vision bridge**. Text-only models such as
-DeepSeek V4 Flash can't see pasted screenshots; the router transparently sends each image
-to a vision-capable model you choose, and hands the text-only model the extracted evidence
-as text. One cheap subscription (`deepseek-v4-flash` for everything) plus one vision reader
-= a multimodal coding agent.
+Point ZCode at **subscription providers** — **opencode Go**, **ClinePass**, or plain
+APIs like DeepSeek — through one loopback endpoint. And it adds the missing
+superpower: a **vision bridge**. Text-only models such as DeepSeek V4 Flash can't see
+pasted screenshots; the router transparently sends each image to a vision-capable
+model you choose and hands the text-only model the extracted evidence as text.
+One cheap subscription for everything plus one vision reader = a multimodal coding agent.
 
-Inspired by [codex-router](https://github.com/duolahypercho/codex-router), rebuilt as a
-single zero-dependency Node.js CLI so it works the same on **Windows, macOS, and Linux** —
-no Python, no LiteLLM, no WSL, no build step.
+Install once, forget it — a background runner (Docker or a scheduled service) keeps it
+alive, auto-restarts it, and survives reboots.
 
 ## Install
 
+Requires Node.js ≥ 22 — nothing else to install. The router only listens on `127.0.0.1`.
+
+### Recommended: `npx zcode-router setup` + Docker
+
 ```sh
-npm install -g zcode-router
-zcode-router selftest   # full end-to-end check against a built-in mock provider — no API key needed
-zcode-router setup      # pick providers, paste keys, then install a background runner
+npx zcode-router selftest   # end-to-end check with a built-in mock provider — no API key needed
+npx zcode-router setup      # guided: pick providers, paste keys, then install
 ```
 
-`setup` asks how to keep the API running (ZCode needs it as a provider the whole time you work):
+`setup` walks you through the settings (which providers, their API keys), then asks
+how to keep the router running — ZCode needs it as a provider the whole time you work.
+Pick **Docker**:
 
-1. **Native service** — Windows Task Scheduler + hidden `.vbs` (ONLOGON), Linux `systemd --user`, macOS launchd.
-2. **Docker** — copies this npm package into a `node:22-alpine` image, `restart: unless-stopped`, publishes `127.0.0.1:4279`. Same after setup: `npx zcode-router docker`.
-3. **Manual** — `zcode-router start` in a terminal.
+1. **Docker (recommended)** — copies the router into a `node:22-alpine` image with
+   `restart: unless-stopped`, published on `127.0.0.1:4279`. The image is
+   self-contained, so it keeps working even after the temporary npx cache is cleaned.
+   Stop with `npx zcode-router docker down`; after an update, rebuild with
+   `npx zcode-router docker`.
+2. **Native service** — Windows Task Scheduler + hidden `.vbs` (ONLOGON), Linux
+   `systemd --user`, macOS launchd. `setup` first copies the router into
+   `~/.zcode-router/local`, so the service is independent of the npx cache too.
+   Stop with `npx zcode-router service stop`.
+3. **Manual** — not offered under `npx`: npx downloads the package into a temporary
+   cache that gets cleaned up, so `zcode-router start` would silently stop working.
+   Manual mode needs a permanent install — see below.
 
-Then in ZCode: **Settings → Model Settings → Add Provider**, and paste what `setup` printed:
+### Optional: permanent install (`npm install -g`)
+
+Prefer a `zcode-router` command that is always there? Install it globally and run it
+yourself:
+
+```sh
+npm install -g zcode-router
+zcode-router setup            # the same guided flow — "Manual" is now available too
+zcode-router start            # run it in a terminal whenever you work with ZCode
+zcode-router service install  # or install it as a scheduled task / service
+                              # (Task Scheduler, systemd, launchd — runs from ~/.zcode-router/local)
+```
+
+With the global install, `setup` offers all three options, including **Manual**
+(`zcode-router start` in a terminal) and the **native service**, both backed by your
+permanent copy of the package.
+
+## Connect ZCode
+
+In ZCode: **Settings → Model Settings → Add Provider**, and paste what `setup` printed:
 
 | Field | Value |
 | --- | --- |
@@ -38,19 +69,9 @@ Then in ZCode: **Settings → Model Settings → Add Provider**, and paste what 
 
 Both protocol choices work — the router speaks **Anthropic Messages** (`/v1/messages`,
 ZCode's default "Anthropic" provider template) and **OpenAI Chat Completions**
-(`/v1/chat/completions`), including streaming and tool calls. ZCode fetches the model list
-from the router automatically; if the list does not load, `zcode-router start` and
-`zcode-router models` print the exact model IDs to paste in manually
-(e.g. `opencode-go/deepseek-v4-flash`).
-
-Requires Node.js ≥ 22. No other dependency. The router binds to `127.0.0.1` only.
-
-## Why not codex-router?
-
-codex-router targets the Codex CLI/desktop app and leans on a Python/LiteLLM stack that is
-fragile on Windows. zcode-router targets **ZCode**, is **one npm package with zero runtime
-dependencies**, and can be verified end-to-end **without any provider account** thanks to the
-built-in mock (`zcode-router selftest`).
+(`/v1/chat/completions`), including streaming and tool calls. ZCode fetches the model
+list from the router automatically; if the list does not load, `zcode-router models`
+prints the exact model IDs to paste in manually (e.g. `opencode-go/deepseek-v4-flash`).
 
 ## Providers
 
@@ -59,17 +80,14 @@ built-in mock (`zcode-router selftest`).
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` env, or stored |
 | `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` env, or stored |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` env, or stored |
-| `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` env, or stored |
 
-`opencode-go` covers the full Go catalog: the Chat Completions models (DeepSeek V4, Kimi,
-GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves only over its
-Anthropic Messages endpoint — the router translates both directions, so they work with
-either zCode protocol choice and with the vision bridge. (Go's `gpt-5.6-luna` is served
-only over the OpenAI Responses API, which the router does not implement.)
+`opencode-go` covers the full Go catalog: the Chat Completions models (DeepSeek V4,
+Kimi, GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves only
+over its Anthropic Messages endpoint — the router translates both directions, so they
+work with either zCode protocol choice and with the vision bridge.
 
-Environment variables win over stored keys. Keys are stored in
-`~/.zcode-router/config.json` with mode `0600` (POSIX) or a current-user-only ACL (Windows),
-entered through a hidden terminal prompt.
+Environment variables win over stored keys. Keys entered during `setup` are stored in
+`~/.zcode-router/config.json` and never leave your machine (see Security).
 
 Add anything else OpenAI-compatible (a corporate gateway, another subscription, …):
 
@@ -78,40 +96,31 @@ zcode-router providers add-custom mycorp --base-url https://llm.corp.example/v1 
 zcode-router providers key mycorp set
 ```
 
-## The vision bridge
+## How it works: the vision bridge
 
 On by default. When a request for a **text-only** model contains an image, the router:
 
-1. sends the image to the configured vision engine (auto-picks the cheapest vision-capable
-   model from your enabled providers, e.g. `opencode-go/grok-4.5`),
+1. sends the image to the configured vision engine — `opencode-go/minimax-m3` by
+   default (cheap and very good; pin any other model with
+   `zcode-router vision-bridge engine <provider/model>`, or `auto` to pick the
+   cheapest vision-capable model from your enabled providers),
 2. replaces the image with fenced, clearly-labelled evidence text: summary, verbatim
    transcript, layout, data values, and an explicit "illegible" list,
-3. caches reads by image hash for an hour — ZCode replays history every turn, so a 10-turn
-   conversation about one screenshot costs **one** vision call.
+3. caches reads by image hash for an hour — ZCode replays history every turn, so a
+   10-turn conversation about one screenshot costs **one** vision call.
 
-If no engine is available, nothing changes: the provider refuses the paste exactly as it
-would without the router. If the engine errors, the model is told the image could not be
-read instead of being left to invent its contents.
+The routing itself is a faithful pass-through: tool calls, streaming, and usage
+payloads are forwarded untouched — only the `model` field is rewritten to the upstream
+id and the upstream key injected. ZCode keeps owning the agent loop, tools,
+permissions, and workspace; the router only does inference routing.
+
+If no vision engine is available, nothing changes: the provider refuses the paste
+exactly as it would without the router. If the engine errors, the model is told the
+image could not be read instead of being left to invent its contents.
 
 The catalog advertises image input on every routed model while a vision engine is
-configured. zCode still often omits the screenshot from the HTTP request and injects a
-local path under `~/.zcode/cli/image-cache/` plus a "model does not support image input"
-reminder — the router reads that cache file and bridges it anyway. `start` also patches
-`~/.zcode/v2/config.json` so zCode's own gate allows attachments (`zcode-router zcode-patch`
-to do it by hand). Fully quit zCode after a patch.
-
-If a paste still falls through to OCR, restart with verbose logs and share them:
-
-```sh
-zcode-router start --verbose
-```
-
-```sh
-zcode-router vision-bridge                      # status
-zcode-router vision-bridge engine opencode-go/grok-4.5   # pin an engine
-zcode-router vision-bridge engine auto          # cheapest vision-capable enabled model
-zcode-router vision-bridge off                  # never spend vision quota on pastes
-```
+configured, and `setup`/`start` patch `~/.zcode/v2/config.json` so zCode's own gate
+allows attachments.
 
 ### Free, private, offline: a local vision model
 
@@ -123,75 +132,32 @@ zcode-router vision-bridge engine local --base-url http://127.0.0.1:1234/v1 --mo
 ```
 
 (That's LM Studio's default address; Ollama is `http://127.0.0.1:11434/v1`.)
-
-Is a model vision-capable? The registry is conservative; override per model:
-
-```sh
-zcode-router models vision opencode-go/glm-5.2 on
-```
-
-## Everyday commands
-
-```sh
-zcode-router doctor            # verify everything; prints the zCode settings block
-zcode-router doctor --probe    # also ping each provider's free /models endpoint
-zcode-router providers         # what is enabled, where keys come from
-zcode-router models            # the catalog ZCode will see
-zcode-router service install   # Task Scheduler / systemd / launchd (also offered by setup)
-zcode-router service stop
-zcode-router docker            # compose up --build; auto-restart. Requires Docker Desktop / compose
-zcode-router docker down
-zcode-router update            # npm self-update (auto-checked once a day on `start`)
-```
-
-After `zcode-router update`, re-run `service install` or `docker` so the background runner picks up the new files.
-
-Do not run the native service and Docker on the same port at once.
-
-## How it works
-
-```mermaid
-flowchart LR
-  Z["ZCode (custom OpenAI provider)<br/>http://127.0.0.1:4279/v1"] --> R["zcode-router<br/>auth + vision bridge"]
-  R --> O["opencode Go"]
-  R --> C["ClinePass"]
-  R --> D["DeepSeek"]
-  R --> ZAI["Z.ai Coding Plan"]
-  R -. "images only" .-> V["vision engine<br/>(any enabled vision model or local runtime)"]
-```
-
-The server speaks the OpenAI Chat Completions API (`GET /v1/models`,
-`POST /v1/chat/completions`) and the Anthropic Messages API (`POST /v1/messages`,
-`POST /v1/messages/count_tokens`), streaming SSE included; Anthropic requests are
-translated to the canonical OpenAI shape, so every upstream provider and the vision bridge
-work identically for both protocols. For OpenAI-protocol clients, routing is a faithful
-byte-level pass-through: tool calls, streaming, and usage payloads are forwarded untouched —
-only the `model` field is rewritten to the upstream id, the upstream key is injected, and
-the vision bridge rewrites image parts when the target model can't see.
-
-ZCode keeps owning the agent loop, tools, permissions, and workspace. The router only does
-inference routing.
+Other handy tweaks: `zcode-router vision-bridge off` to never spend vision quota on
+pastes, or `zcode-router models vision <provider/model> on|off` to override whether a
+model is treated as vision-capable.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md). Short version: loopback-only listener, random local bearer
-key (timing-safe comparison), keys stored user-only, upstream base URLs must be HTTPS
-(loopback exempt for local models), request bodies capped (64 MiB by default,
-`ZCODE_ROUTER_MAX_BODY_BYTES` to change), zero runtime dependencies, npm releases published
-with provenance from GitHub Actions.
+Built to run on your own machine and face only ZCode on loopback:
 
-## Updating & releases
-
-Releases are tag-driven: CI tests on Ubuntu/Windows/macOS × Node 22/24, then
-`npm publish --provenance` and a GitHub release. To cut one:
-
-```sh
-npm version patch   # bumps, commits, tags vX.Y.Z
-git push --follow-tags
-```
-
-Requires the `NPM_TOKEN` repo secret (or switch to npm trusted publishing — the workflow
-already requests `id-token: write`).
+- **Loopback only.** The router binds `127.0.0.1` exclusively. Docker publishes only
+  `127.0.0.1:4279` on the host; inside the container it listens on `0.0.0.0` so the
+  port mapping works, but nothing off-machine can reach it.
+- **Authenticated, even locally.** Every request must present the random 32-char
+  bearer key printed by `setup`/`doctor`/`start`, compared in constant time. The key
+  only ever travels between ZCode and the router on loopback — don't share it.
+- **Your upstream keys stay yours.** Stored in `~/.zcode-router/config.json` with mode
+  `0600` (POSIX) or a current-user-only ACL (Windows), entered through a hidden
+  terminal prompt. The router injects them into upstream calls; they never appear in
+  the ZCode-facing API.
+- **No arbitrary targets.** Upstream base URLs must be HTTPS (loopback exempt for
+  local vision models), and the vision bridge refuses to read local image files
+  outside zCode's own image cache.
+- **Request bodies capped** at 64 MiB by default (`ZCODE_ROUTER_MAX_BODY_BYTES` to
+  change).
+- **Minimal supply chain.** Zero runtime dependencies — the package ships only the
+  CLI and its own source. Releases are published to npm with provenance from GitHub
+  Actions.
 
 ## License
 
