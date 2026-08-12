@@ -177,3 +177,7 @@ Built to run on your own machine and face only ZCode on loopback:
 ## License
 
 MIT. Independent community project, not affiliated with Z.ai, opencode, Cline, or DeepSeek.
+
+## Disclaimer
+
+Special thanks for https://github.com/duolahypercho/codex-router/ . That is fork + rework for zCode.
