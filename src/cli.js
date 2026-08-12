@@ -7,6 +7,7 @@ import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_POR
 import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, isLoopback } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
+import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -23,6 +24,7 @@ export async function main(argv) {
     case 'providers': return cmdProviders(rest);
     case 'models': return cmdModels(rest);
     case 'vision-bridge': return cmdVisionBridge(rest);
+    case 'zcode-patch': return cmdZcodePatch(rest);
     case 'update': return cmdUpdate();
     case 'version':
     case '--version':
@@ -45,7 +47,7 @@ Usage: zcode-router <command>
 
 Getting started:
   setup                          Guided setup: pick providers, store keys (hidden prompt)
-  start [--port N]               Run the router on 127.0.0.1 (default port ${DEFAULT_PORT})
+  start [--port N] [--verbose]   Run the router on 127.0.0.1 (default port ${DEFAULT_PORT})
   doctor [--probe]               Verify config and print the exact zCode settings
   selftest                       Full end-to-end check against a mock provider (no API key needed)
 
@@ -65,6 +67,7 @@ Vision bridge (images -> vision model -> text evidence for text-only models):
   vision-bridge engine local --base-url http://127.0.0.1:1234/v1 --model qwen2.5vl:3b
 
 Maintenance:
+  zcode-patch                    Patch ~/.zcode/v2/config.json so zCode allows image attachments
   update                         Update the global npm package
   version                        Print version
 
@@ -124,6 +127,7 @@ async function cmdStart(args) {
     process.exitCode = 1;
     return;
   }
+  const verbose = args.includes('--verbose') || process.env.ZCODE_ROUTER_VERBOSE === '1';
   const portIdx = args.indexOf('--port');
   if (portIdx !== -1) {
     const p = Number(args[portIdx + 1]);
@@ -159,8 +163,8 @@ async function cmdStart(args) {
     process.exitCode = 1;
     return;
   }
-  const server = await startServer({ config: cfg, log: (m) => err(`[router] ${m}`) });
-  log(`zcode-router ${VERSION} listening on http://127.0.0.1:${cfg.port} (loopback only)`);
+  const server = await startServer({ config: cfg, log: (m) => err(`[router] ${m}`), verbose });
+  log(`zcode-router ${VERSION} listening on http://127.0.0.1:${cfg.port} (loopback only)${verbose ? ' [verbose]' : ''}`);
   printZCodeBlock(cfg);
   log('\nModels served (copy-paste into zCode if the list does not auto-load):');
   const engine = resolveVisionEngine(cfg);
@@ -171,11 +175,38 @@ async function cmdStart(args) {
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
   if (engine) {
     log('zCode caches model capabilities: click Refresh on the provider, fully quit zCode, and start a new chat so it re-reads image support.');
+    reportZcodePatch(patchZcodeConfig({ port: cfg.port }));
   }
   log('Ctrl+C to stop. Keep this running while you use ZCode.');
+  if (verbose) log('Verbose logging on — request headers, message text (redacted), and vision-bridge steps will be printed.');
   checkForUpdate(cfg).catch(() => {});
   process.on('SIGINT', () => { server.close(); process.exit(0); });
   process.on('SIGTERM', () => { server.close(); process.exit(0); });
+}
+
+function reportZcodePatch(result) {
+  if (!result.ok && result.reason === 'no-config') {
+    log(`zCode config not found at ${result.path} — skip (ok if zCode is not installed here).`);
+    return;
+  }
+  if (!result.ok) {
+    err(`zCode config patch skipped: ${result.reason} (${result.path})`);
+    return;
+  }
+  if (result.patched === 0) {
+    log(`zCode config: no router provider to patch in ${result.path}`);
+    return;
+  }
+  log(`zCode config: set image input on ${result.patched} model(s) in ${result.names.join(', ')}.`);
+  log(`Backup: ${result.backup}`);
+  log('Fully quit zCode and start a new chat for the patch to apply.');
+}
+
+function cmdZcodePatch() {
+  const cfg = loadConfig() || defaultConfig();
+  const result = patchZcodeConfig({ port: cfg.port });
+  reportZcodePatch(result);
+  if (!result.ok && result.reason !== 'no-config') process.exitCode = 1;
 }
 
 function printZCodeBlock(cfg) {
@@ -257,6 +288,7 @@ async function cmdDoctor(args) {
     // No engine is not a failure: the bridge just stays inactive, as without the router.
     log(`INFO  vision bridge engine: ${engine ? engine.label : 'none available — pin one with \`vision-bridge engine <provider/model>\` to enable image pasting'}`);
   }
+  log(`INFO  zCode config: ${zcodeConfigPath()}${fs.existsSync(zcodeConfigPath()) ? '' : ' (not found)'}`);
 
   finish();
 

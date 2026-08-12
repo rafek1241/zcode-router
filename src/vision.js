@@ -24,6 +24,13 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const DATA_URL_RE = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/g;
 const MD_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g;
 const IMAGE_TAG_RE = /<image\b[^>]*\bpath="([^"]+)"[^>]*\/?>/gi;
+// zCode omits the image from the API request and injects the local cache path
+// into a system reminder. Example:
+//   C:\Users\…\.zcode\cli\image-cache\sess_…\image-….png
+const ZCODE_CACHE_RE = /(?:[A-Za-z]:[\\/]|\/)(?:[^\s"'`<>\\/]+[\\/])*?\.zcode[\\/](?:cli[\\/])?image-cache[\\/][^\s"'`<>]+\.(?:png|jpe?g|gif|webp|bmp)/gi;
+const OMITTED_RE = /the image was omitted from the provider request because the selected model does not support image input\.?/gi;
+const OMITTED_REPLACEMENT =
+  'The attached image was read by the zcode-router vision bridge. Use the IMAGE DATA in this turn. Do not OCR, Read, or open the image file.';
 
 export class VisionCache {
   constructor(ttlMs = CACHE_TTL_MS) {
@@ -86,7 +93,21 @@ export function isImagePart(part) {
 }
 
 function textHasEmbeddedImage(s) {
-  return typeof s === 'string' && (/data:image\//i.test(s) || /<image\b[^>]*\bpath=/i.test(s) || /!\[[^\]]*\]\((?:data:image|file:)/i.test(s));
+  return typeof s === 'string' && (/data:image\//i.test(s) || /<image\b[^>]*\bpath=/i.test(s) || /!\[[^\]]*\]\((?:data:image|file:)/i.test(s) || hasZcodeCachePath(s));
+}
+
+function hasZcodeCachePath(s) {
+  return /[\\/]\.zcode[\\/](?:cli[\\/])?image-cache[\\/][^\s"'`<>]+\.(?:png|jpe?g|gif|webp|bmp)/i.test(s);
+}
+
+export function findZcodeCachePaths(text) {
+  ZCODE_CACHE_RE.lastIndex = 0;
+  return [...String(text).matchAll(ZCODE_CACHE_RE)].map((m) => m[0]);
+}
+
+export function isZcodeImageCachePath(p) {
+  const n = String(p).replace(/\\/g, '/').toLowerCase();
+  return n.includes('/.zcode/') && n.includes('/image-cache/');
 }
 
 export function messageHasImage(msg) {
@@ -175,8 +196,13 @@ function fileToUrl(f) {
 }
 
 function extractFromText(text) {
+  DATA_URL_RE.lastIndex = 0;
+  MD_IMAGE_RE.lastIndex = 0;
+  IMAGE_TAG_RE.lastIndex = 0;
+  ZCODE_CACHE_RE.lastIndex = 0;
+  OMITTED_RE.lastIndex = 0;
   const urls = [];
-  let out = text;
+  let out = text.replace(OMITTED_RE, OMITTED_REPLACEMENT);
   out = out.replace(DATA_URL_RE, (m) => {
     urls.push(m.replace(/\s+/g, ''));
     return '[image]';
@@ -193,7 +219,22 @@ function extractFromText(text) {
     urls.push(p);
     return '[image]';
   });
+  out = out.replace(ZCODE_CACHE_RE, (m) => {
+    urls.push(m);
+    return '[local image — transcribed below]';
+  });
   return { text: out, urls };
+}
+
+export function rewriteOmittedReminders(body) {
+  for (const msg of body.messages || []) {
+    if (typeof msg.content === 'string') msg.content = msg.content.replace(OMITTED_RE, OMITTED_REPLACEMENT);
+    else if (Array.isArray(msg.content)) {
+      for (const p of msg.content) {
+        if (typeof p.text === 'string') p.text = p.text.replace(OMITTED_RE, OMITTED_REPLACEMENT);
+      }
+    }
+  }
 }
 
 function mimeFromPath(filePath, buf) {
@@ -231,6 +272,8 @@ export function materializeImageUrl(url) {
   if (!filePath) return url;
   const resolved = path.resolve(filePath);
   if (resolved.startsWith('\\\\') || resolved.startsWith('//')) return null;
+  // Only read zCode's own image-cache — never arbitrary paths from prompt text.
+  if (!isZcodeImageCachePath(resolved)) return null;
   let st;
   try {
     st = fs.statSync(resolved);
@@ -243,7 +286,7 @@ export function materializeImageUrl(url) {
   return `data:${mimeFromPath(resolved, buf)};base64,${buf.toString('base64')}`;
 }
 
-async function describeImage(engine, imageUrl, fetchImpl) {
+async function describeImage(engine, imageUrl, fetchImpl, log, verbose) {
   const openaiBody = {
     model: engine.model,
     stream: false,
@@ -259,7 +302,9 @@ async function describeImage(engine, imageUrl, fetchImpl) {
     ],
   };
   const messagesProtocol = engine.protocol === 'messages';
-  const resp = await fetchImpl(`${engine.baseURL}/${messagesProtocol ? 'messages' : 'chat/completions'}`, {
+  const url = `${engine.baseURL}/${messagesProtocol ? 'messages' : 'chat/completions'}`;
+  if (verbose) log(`vision-bridge: engine POST ${url} model=${engine.model} protocol=${messagesProtocol ? 'messages' : 'openai'}`);
+  const resp = await fetchImpl(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -280,12 +325,16 @@ async function describeImage(engine, imageUrl, fetchImpl) {
     ? (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n')
     : data?.choices?.[0]?.message?.content;
   if (!text) throw new Error(`vision engine ${engine.label || engine.model} returned an empty reading`);
-  return typeof text === 'string' ? text : JSON.stringify(text);
+  const out = typeof text === 'string' ? text : JSON.stringify(text);
+  if (verbose) log(`vision-bridge: engine HTTP ${resp.status} reply ${out.length} chars: ${out.slice(0, 400)}`);
+  return out;
 }
 
-export async function bridgeImages(body, engine, cache, { fetchImpl = fetch, log = () => {} } = {}) {
+export async function bridgeImages(body, engine, cache, { fetchImpl = fetch, log = () => {}, verbose = false } = {}) {
   const unknown = normalizeImageParts(body);
+  rewriteOmittedReminders(body);
   if (unknown.length) log(`vision-bridge: unrecognized content parts: ${[...new Set(unknown)].join(', ')}`);
+  if (verbose) log(`vision-bridge: after normalize shape=${contentShape(body)}`);
   const report = [];
   const fence = crypto.randomBytes(8).toString('hex');
   let n = 0;
@@ -296,7 +345,9 @@ export async function bridgeImages(body, engine, cache, { fetchImpl = fetch, log
       if (!isImagePart(part)) continue;
       n += 1;
       const rawUrl = imageUrlOf(part);
+      if (verbose) log(`vision-bridge: image #${n} raw=${String(rawUrl).slice(0, 160)}`);
       const url = materializeImageUrl(rawUrl);
+      if (verbose) log(`vision-bridge: image #${n} materialized=${url ? (url.startsWith('data:') ? `data-url ${url.length} chars` : url.slice(0, 160)) : 'FAIL'}`);
       let text = url ? cache.get(url) : null;
       let cached = Boolean(text);
       if (!url) {
@@ -305,7 +356,7 @@ export async function bridgeImages(body, engine, cache, { fetchImpl = fetch, log
         log(`vision-bridge: image #${n} failed: could not materialize ${String(rawUrl).slice(0, 80)}`);
       } else if (!text) {
         try {
-          const reading = await describeImage(engine, url, fetchImpl);
+          const reading = await describeImage(engine, url, fetchImpl, log, verbose);
           text = reading;
           cache.set(url, reading);
         } catch (err) {
@@ -332,5 +383,6 @@ export async function bridgeImages(body, engine, cache, { fetchImpl = fetch, log
     }
   }
   if (n > 0) log(`vision-bridge: ${report.join('; ') || `${n} image(s) via ${engine.label}`}`);
+  else log('vision-bridge: ran but found no image parts after normalize');
   return report;
 }

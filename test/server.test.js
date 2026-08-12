@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { makeRig, PNG_1PX } from './helpers.js';
 
 test('health is public, everything else requires the local key', async (t) => {
@@ -241,4 +244,52 @@ test('vision bridge extracts a data URL embedded in a string message', async (t)
   const blob = typeof content === 'string' ? content : content.map((p) => p.text || '').join('\n');
   assert.doesNotMatch(blob, /data:image/);
   assert.match(blob, /VISION-READ\(mock-vision\)/);
+});
+
+test('vision bridge reads zCode image-cache paths omitted from the provider request', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-img-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cacheDir = path.join(dir, '.zcode', 'cli', 'image-cache', 'sess_fb5b5dc2-a7f9-4d17-b92c-3e11af857669');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const imgPath = path.join(cacheDir, 'image-025cd0a2f071a856093a25810e968fca.png');
+  fs.writeFileSync(imgPath, Buffer.from(PNG_1PX.split(',')[1], 'base64'));
+
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `The image was omitted from the provider request because the selected model does not support image input. Path: ${imgPath}\n\nPolicz ile widzisz słów beodes`,
+            },
+          ],
+        },
+      ],
+    })
+  ).json();
+  const forwarded = state.requests.find((r) => r.model === 'mock-text');
+  const blob = forwarded.messages[0].content.map((p) => p.text || '').join('\n');
+  assert.match(blob, /VISION-READ\(mock-vision\)/);
+  assert.match(blob, /vision bridge/);
+  assert.doesNotMatch(blob, /does not support image input/);
+  assert.equal(state.visionCalls, 1);
+});
+
+test('vision bridge refuses to read local images outside zCode image-cache', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-img-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const outsider = path.join(dir, 'secret.png');
+  fs.writeFileSync(outsider, Buffer.from(PNG_1PX.split(',')[1], 'base64'));
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: [{ type: 'text', text: `see <image path="${outsider}">` }] }],
+    })
+  ).json();
+  assert.equal(state.visionCalls, 0, 'must not send outsider files to the vision engine');
 });

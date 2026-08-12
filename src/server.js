@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL } from './providers.js';
 import { VisionCache, bodyHasImage, bridgeImages, contentShape } from './vision.js';
+import { headerSummary, summarizeBody, looksLikeOmittedImage } from './debug.js';
 import {
   anthropicToOpenai,
   openaiToAnthropic,
@@ -90,7 +91,7 @@ export function resolveVisionEngine(config) {
   return autoVisionEngine(config);
 }
 
-export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
+export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbose = false }) {
   const visionCache = new VisionCache();
 
   const server = http.createServer(async (req, res) => {
@@ -99,6 +100,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
       const route = url.pathname.replace(/^\/v1(?=\/)/, '');
       const anthropic = route === '/messages' || route === '/messages/count_tokens';
       const fail = anthropic ? anthropicError : openaiError;
+      if (verbose) log(`http ${req.method} ${url.pathname} ${JSON.stringify(headerSummary(req))}`);
 
       if (route === '/health' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, service: 'zcode-router' });
@@ -137,6 +139,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
           };
         });
         sendJson(res, 200, { object: 'list', data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
+        if (verbose) log(`models: ${data.length} entries, image advertised on ${data.filter((m) => m.supportsImages).length}, engine=${engine?.label || 'none'}`);
         return;
       }
 
@@ -196,14 +199,25 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
     // first so the vision bridge works identically for both protocols.
     const body = anthropic ? anthropicToOpenai(clientBody) : clientBody;
     const shape = contentShape(body);
+    const hasImage = bodyHasImage(body);
+    const omitted = looksLikeOmittedImage(body);
+    if (verbose) {
+      log(`chat in protocol=${anthropic ? 'messages' : 'openai'} bytes=${raw.length} hasImage=${hasImage} omittedHint=${omitted} shape=${shape}`);
+      log(`chat body ${JSON.stringify(summarizeBody(clientBody))}`);
+    } else if (omitted && !hasImage) {
+      log(`vision-bridge: zCode omitted-image reminder in request but no image part detected (shape ${shape}) — will try cache-path extraction`);
+    }
 
-    if (!route.meta.vision && bodyHasImage(body)) {
+    if (!route.meta.vision && (hasImage || omitted)) {
       const engine = resolveVisionEngine(config);
       if (engine) {
-        await bridgeImages(body, engine, visionCache, { fetchImpl, log });
+        if (verbose) log(`vision-bridge: running engine=${engine.label} protocol=${engine.protocol} nativeVision=${route.meta.vision}`);
+        await bridgeImages(body, engine, visionCache, { fetchImpl, log, verbose });
       } else {
-        log(`vision-bridge: images present but no engine (shape ${shape})`);
+        log(`vision-bridge: images/omitted-hint present but no engine (shape ${shape})`);
       }
+    } else if (verbose) {
+      log(`vision-bridge: skipped nativeVision=${route.meta.vision} hasImage=${hasImage} omittedHint=${omitted}`);
     }
 
     const upstreamBody = { ...body, model: route.modelId };
@@ -228,7 +242,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
       return;
     }
 
-    log(`${body.stream ? 'stream' : 'once'} ${anthropic ? 'messages' : 'chat'} ${requestedModel} -> ${route.provider.id}/${route.modelId} [${upstream.status}] ${shape}`);
+    log(`${body.stream ? 'stream' : 'once'} ${anthropic ? 'messages' : 'chat'} ${requestedModel} -> ${route.provider.id}/${route.modelId} [${upstream.status}] ${shape}${omitted ? ' omitted-hint' : ''}${hasImage ? ' has-image' : ''}`);
 
     if (!anthropic && !messagesUpstream) {
       // OpenAI-protocol client, OpenAI-protocol upstream: faithful byte pass-through.
@@ -306,9 +320,9 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch }) {
   return server;
 }
 
-export function startServer({ config, log = console.error }) {
+export function startServer({ config, log = console.error, verbose = false }) {
   return new Promise((resolve, reject) => {
-    const server = createRouter({ config, log });
+    const server = createRouter({ config, log, verbose });
     server.on('error', reject);
     server.listen(config.port, '127.0.0.1', () => resolve(server));
   });

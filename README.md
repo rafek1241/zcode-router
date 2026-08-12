@@ -89,10 +89,17 @@ would without the router. If the engine errors, the model is told the image coul
 read instead of being left to invent its contents.
 
 The catalog advertises image input on every routed model while a vision engine is
-configured — otherwise zCode treats DeepSeek as text-only, never puts the screenshot in
-the API request, and the agent tries local OCR instead. After changing this, **Refresh
-the provider in zCode, fully quit the app, and start a new chat**; zCode caches
-`modalities.input` in `~/.zcode/v2/config.json`.
+configured. zCode still often omits the screenshot from the HTTP request and injects a
+local path under `~/.zcode/cli/image-cache/` plus a "model does not support image input"
+reminder — the router reads that cache file and bridges it anyway. `start` also patches
+`~/.zcode/v2/config.json` so zCode's own gate allows attachments (`zcode-router zcode-patch`
+to do it by hand). Fully quit zCode after a patch.
+
+If a paste still falls through to OCR, restart with verbose logs and share them:
+
+```sh
+zcode-router start --verbose
+```
 
 ```sh
 zcode-router vision-bridge                      # status
