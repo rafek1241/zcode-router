@@ -19,9 +19,14 @@ no Python, no LiteLLM, no WSL, no build step.
 ```sh
 npm install -g zcode-router
 zcode-router selftest   # full end-to-end check against a built-in mock provider — no API key needed
-zcode-router setup      # pick providers, paste keys (hidden prompt)
-zcode-router start      # keep running while you use ZCode
+zcode-router setup      # pick providers, paste keys, then install a background runner
 ```
+
+`setup` asks how to keep the API running (ZCode needs it as a provider the whole time you work):
+
+1. **Native service** — Windows Task Scheduler + hidden `.vbs` (ONLOGON), Linux `systemd --user`, macOS launchd.
+2. **Docker** — copies this npm package into a `node:22-alpine` image, `restart: unless-stopped`, publishes `127.0.0.1:4279`. Same after setup: `npx zcode-router docker`.
+3. **Manual** — `zcode-router start` in a terminal.
 
 Then in ZCode: **Settings → Model Settings → Add Provider**, and paste what `setup` printed:
 
@@ -29,10 +34,14 @@ Then in ZCode: **Settings → Model Settings → Add Provider**, and paste what 
 | --- | --- |
 | Name | `zcode-router` |
 | Base URL | `http://127.0.0.1:4279/v1` |
-| API Key | the loopback key printed by `setup` / `doctor` |
+| API Key | the loopback key printed by `setup` / `doctor` / `start` |
 
-ZCode fetches the model list from the router automatically. Pick e.g.
-`opencode-go/deepseek-v4-flash` in the chat model selector.
+Both protocol choices work — the router speaks **Anthropic Messages** (`/v1/messages`,
+ZCode's default "Anthropic" provider template) and **OpenAI Chat Completions**
+(`/v1/chat/completions`), including streaming and tool calls. ZCode fetches the model list
+from the router automatically; if the list does not load, `zcode-router start` and
+`zcode-router models` print the exact model IDs to paste in manually
+(e.g. `opencode-go/deepseek-v4-flash`).
 
 Requires Node.js ≥ 22. No other dependency. The router binds to `127.0.0.1` only.
 
@@ -51,6 +60,12 @@ built-in mock (`zcode-router selftest`).
 | `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` env, or stored |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` env, or stored |
 | `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` env, or stored |
+
+`opencode-go` covers the full Go catalog: the Chat Completions models (DeepSeek V4, Kimi,
+GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves only over its
+Anthropic Messages endpoint — the router translates both directions, so they work with
+either zCode protocol choice and with the vision bridge. (Go's `gpt-5.6-luna` is served
+only over the OpenAI Responses API, which the router does not implement.)
 
 Environment variables win over stored keys. Keys are stored in
 `~/.zcode-router/config.json` with mode `0600` (POSIX) or a current-user-only ACL (Windows),
@@ -77,6 +92,19 @@ On by default. When a request for a **text-only** model contains an image, the r
 If no engine is available, nothing changes: the provider refuses the paste exactly as it
 would without the router. If the engine errors, the model is told the image could not be
 read instead of being left to invent its contents.
+
+The catalog advertises image input on every routed model while a vision engine is
+configured. zCode still often omits the screenshot from the HTTP request and injects a
+local path under `~/.zcode/cli/image-cache/` plus a "model does not support image input"
+reminder — the router reads that cache file and bridges it anyway. `start` also patches
+`~/.zcode/v2/config.json` so zCode's own gate allows attachments (`zcode-router zcode-patch`
+to do it by hand). Fully quit zCode after a patch.
+
+If a paste still falls through to OCR, restart with verbose logs and share them:
+
+```sh
+zcode-router start --verbose
+```
 
 ```sh
 zcode-router vision-bridge                      # status
@@ -109,12 +137,16 @@ zcode-router doctor            # verify everything; prints the zCode settings bl
 zcode-router doctor --probe    # also ping each provider's free /models endpoint
 zcode-router providers         # what is enabled, where keys come from
 zcode-router models            # the catalog ZCode will see
+zcode-router service install   # Task Scheduler / systemd / launchd (also offered by setup)
+zcode-router service stop
+zcode-router docker            # compose up --build; auto-restart. Requires Docker Desktop / compose
+zcode-router docker down
 zcode-router update            # npm self-update (auto-checked once a day on `start`)
 ```
 
-The router runs in the foreground — keep the terminal open, or background it your platform's
-way (Task Scheduler / `pm2` / `systemd --user`). It is a single process; there is no service
-installer to go wrong on Windows.
+After `zcode-router update`, re-run `service install` or `docker` so the background runner picks up the new files.
+
+Do not run the native service and Docker on the same port at once.
 
 ## How it works
 
@@ -129,10 +161,13 @@ flowchart LR
 ```
 
 The server speaks the OpenAI Chat Completions API (`GET /v1/models`,
-`POST /v1/chat/completions`, streaming SSE included). Routing is a faithful byte-level
-pass-through: tool calls, streaming, and usage payloads are forwarded untouched — only the
-`model` field is rewritten to the upstream id, the upstream key is injected, and the vision
-bridge rewrites image parts when the target model can't see.
+`POST /v1/chat/completions`) and the Anthropic Messages API (`POST /v1/messages`,
+`POST /v1/messages/count_tokens`), streaming SSE included; Anthropic requests are
+translated to the canonical OpenAI shape, so every upstream provider and the vision bridge
+work identically for both protocols. For OpenAI-protocol clients, routing is a faithful
+byte-level pass-through: tool calls, streaming, and usage payloads are forwarded untouched —
+only the `model` field is rewritten to the upstream id, the upstream key is injected, and
+the vision bridge rewrites image parts when the target model can't see.
 
 ZCode keeps owning the agent loop, tools, permissions, and workspace. The router only does
 inference routing.

@@ -3,10 +3,13 @@ import path from 'node:path';
 import net from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT } from './config.js';
+import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile } from './config.js';
 import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, isLoopback } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
+import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
+import { describeServiceTarget, installService, serviceStatus, startService, stopService, uninstallService } from './service.js';
+import { dockerDown, dockerFilesPresent, dockerStatus, installDocker } from './docker.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -18,11 +21,14 @@ export async function main(argv) {
   switch (cmd) {
     case 'setup': return cmdSetup(rest);
     case 'start': return cmdStart(rest);
+    case 'service': return cmdService(rest);
+    case 'docker': return cmdDocker(rest);
     case 'doctor': return cmdDoctor(rest);
     case 'selftest': return cmdSelftest();
     case 'providers': return cmdProviders(rest);
     case 'models': return cmdModels(rest);
     case 'vision-bridge': return cmdVisionBridge(rest);
+    case 'zcode-patch': return cmdZcodePatch(rest);
     case 'update': return cmdUpdate();
     case 'version':
     case '--version':
@@ -44,8 +50,11 @@ function printHelp() {
 Usage: zcode-router <command>
 
 Getting started:
-  setup                          Guided setup: pick providers, store keys (hidden prompt)
-  start [--port N]               Run the router on 127.0.0.1 (default port ${DEFAULT_PORT})
+  setup                          Guided setup: pick providers, keys, then background runner
+  start [--port N] [--verbose]   Run the router on 127.0.0.1 (default port ${DEFAULT_PORT})
+  service install|uninstall|status|start|stop
+                                 Native background runner (Task Scheduler .vbs / systemd / launchd)
+  docker [up|down|status]        Docker Compose (restart: unless-stopped). Default: up
   doctor [--probe]               Verify config and print the exact zCode settings
   selftest                       Full end-to-end check against a mock provider (no API key needed)
 
@@ -53,7 +62,7 @@ Providers & models:
   providers                      List providers (enabled, key source, models)
   providers enable|disable <id>  Toggle a provider (${Object.keys(REGISTRY).join(', ')})
   providers key <id> set|clear   Store/remove a provider API key (hidden prompt)
-  providers add-custom <id> --base-url URL --models a,b,c [--vision b]
+  providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]
   providers remove-custom <id>
   models                         List the catalog zCode will see
   models vision <p/m> on|off     Override a model's image support flag
@@ -65,6 +74,7 @@ Vision bridge (images -> vision model -> text evidence for text-only models):
   vision-bridge engine local --base-url http://127.0.0.1:1234/v1 --model qwen2.5vl:3b
 
 Maintenance:
+  zcode-patch                    Patch ~/.zcode/v2/config.json so zCode allows image attachments
   update                         Update the global npm package
   version                        Print version
 
@@ -109,7 +119,32 @@ async function cmdSetup() {
     saveConfig(cfg);
     log(`\nConfig written to ${configPath()} (mode 0600${process.platform === 'win32' ? ' + user-only ACL' : ''}).`);
     printZCodeBlock(cfg);
-    log('\nNext: run `zcode-router selftest` (no API key needed), then `zcode-router start`.');
+    log('\nKeep the router running so ZCode can always reach it?');
+    log(`  1) Native background service — ${describeServiceTarget()}`);
+    log('  2) Docker (compose, restart: unless-stopped; ZCode still uses http://127.0.0.1)');
+    log('  3) No — I will run `zcode-router start` myself');
+    const mode = (await ask('Choice [1]: ')).trim() || '1';
+    if (mode === '1') {
+      try {
+        installService();
+        log(`Background service installed. ${describeServiceTarget()}`);
+        log('Stop later with `zcode-router service stop` (or uninstall).');
+      } catch (e) {
+        err(`Could not install background service: ${e.message}`);
+        log('Start manually with `zcode-router start`, or retry `zcode-router service install`.');
+      }
+    } else if (mode === '2') {
+      try {
+        const info = installDocker();
+        log(`Docker container up (restart: unless-stopped) on http://127.0.0.1:${info.port}/v1`);
+        log('Stop later with `zcode-router docker down`. Re-run `zcode-router docker` after `zcode-router update`.');
+      } catch (e) {
+        err(`Could not start Docker: ${e.message}`);
+        log('Start manually with `zcode-router start`, or retry `zcode-router docker`.');
+      }
+    } else {
+      log('\nNext: run `zcode-router selftest` (no API key needed), then `zcode-router start`.');
+    }
   } finally {
     rl.close();
   }
@@ -124,6 +159,7 @@ async function cmdStart(args) {
     process.exitCode = 1;
     return;
   }
+  const verbose = args.includes('--verbose') || process.env.ZCODE_ROUTER_VERBOSE === '1';
   const portIdx = args.indexOf('--port');
   if (portIdx !== -1) {
     const p = Number(args[portIdx + 1]);
@@ -159,15 +195,147 @@ async function cmdStart(args) {
     process.exitCode = 1;
     return;
   }
-  const server = await startServer({ config: cfg, log: (m) => err(`[router] ${m}`) });
-  log(`zcode-router ${VERSION} listening on http://127.0.0.1:${cfg.port} (loopback only)`);
+  const host = bindHost();
+  const server = await startServer({ config: cfg, log: (m) => err(`[router] ${m}`), verbose });
+  try {
+    fs.writeFileSync(pidPath(), String(process.pid));
+  } catch {
+    /* pidfile is best-effort for `service stop` */
+  }
+  const where =
+    host === '0.0.0.0'
+      ? `http://0.0.0.0:${cfg.port} (all interfaces — Docker; publish only 127.0.0.1 on the host)`
+      : `http://127.0.0.1:${cfg.port} (loopback only)`;
+  log(`zcode-router ${VERSION} listening on ${where}${verbose ? ' [verbose]' : ''}`);
   printZCodeBlock(cfg);
+  log('\nModels served (copy-paste into zCode if the list does not auto-load):');
   const engine = resolveVisionEngine(cfg);
+  for (const m of catalog(cfg)) {
+    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+    log(`  ${m.id}  ${tag}`);
+  }
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
-  log('Ctrl+C to stop. Keep this running while you use ZCode.');
+  if (engine) {
+    log('zCode caches model capabilities: click Refresh on the provider, fully quit zCode, and start a new chat so it re-reads image support.');
+    reportZcodePatch(patchZcodeConfig({ port: cfg.port }));
+  }
+  if (process.stdout.isTTY) log('Ctrl+C to stop. Keep this running while you use ZCode.');
+  if (verbose) log('Verbose logging on — request headers, message text (redacted), and vision-bridge steps will be printed.');
   checkForUpdate(cfg).catch(() => {});
-  process.on('SIGINT', () => { server.close(); process.exit(0); });
-  process.on('SIGTERM', () => { server.close(); process.exit(0); });
+  const shutdown = () => {
+    clearPidfile();
+    server.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+function cmdService(rest) {
+  const [sub] = rest;
+  switch (sub) {
+    case 'install':
+      if (!loadConfig()) return noConfig();
+      try {
+        installService();
+        log(`Installed. ${describeServiceTarget()}`);
+      } catch (e) {
+        err(e.message);
+        process.exitCode = 1;
+      }
+      return;
+    case 'uninstall':
+      try {
+        uninstallService();
+        log('Background service removed.');
+      } catch (e) {
+        err(e.message);
+        process.exitCode = 1;
+      }
+      return;
+    case 'status': {
+      const st = serviceStatus();
+      log(st.installed ? st.detail || 'installed' : 'not installed');
+      if (!st.installed) process.exitCode = 1;
+      return;
+    }
+    case 'start':
+      try {
+        startService();
+        log('Started.');
+      } catch (e) {
+        err(e.message);
+        process.exitCode = 1;
+      }
+      return;
+    case 'stop':
+      stopService();
+      log('Stopped.');
+      return;
+    default:
+      err('Usage: zcode-router service install|uninstall|status|start|stop');
+      process.exitCode = 1;
+  }
+}
+
+function cmdDocker(rest) {
+  const [sub] = rest;
+  switch (sub) {
+    case undefined:
+    case 'up':
+      if (!loadConfig()) return noConfig();
+      try {
+        const info = installDocker();
+        log(`Docker up (restart: unless-stopped) on http://127.0.0.1:${info.port}/v1`);
+      } catch (e) {
+        err(e.message);
+        process.exitCode = 1;
+      }
+      return;
+    case 'down':
+      try {
+        dockerDown();
+        log('Docker container stopped.');
+      } catch (e) {
+        err(e.message);
+        process.exitCode = 1;
+      }
+      return;
+    case 'status': {
+      const st = dockerStatus();
+      log(st.installed ? st.detail || 'installed' : 'not installed');
+      if (!st.installed) process.exitCode = 1;
+      return;
+    }
+    default:
+      err('Usage: zcode-router docker [up|down|status]');
+      process.exitCode = 1;
+  }
+}
+
+function reportZcodePatch(result) {
+  if (!result.ok && result.reason === 'no-config') {
+    log(`zCode config not found at ${result.path} — skip (ok if zCode is not installed here).`);
+    return;
+  }
+  if (!result.ok) {
+    err(`zCode config patch skipped: ${result.reason} (${result.path})`);
+    return;
+  }
+  if (result.patched === 0) {
+    log(`zCode config: no router provider to patch in ${result.path}`);
+    return;
+  }
+  log(`zCode config: set image input on ${result.patched} model(s) in ${result.names.join(', ')}.`);
+  log(`Backup: ${result.backup}`);
+  log('Fully quit zCode and start a new chat for the patch to apply.');
+}
+
+function cmdZcodePatch() {
+  const cfg = loadConfig() || defaultConfig();
+  const result = patchZcodeConfig({ port: cfg.port });
+  reportZcodePatch(result);
+  if (!result.ok && result.reason !== 'no-config') process.exitCode = 1;
 }
 
 function printZCodeBlock(cfg) {
@@ -176,7 +344,8 @@ ZCode setup (Settings → Model Settings → Add Provider):
   Name:     zcode-router
   Base URL: http://127.0.0.1:${cfg.port}/v1
   API Key:  ${cfg.localKey}
-zCode will fetch the model list automatically. The key is loopback-only — do not share it.`);
+zCode will fetch the model list automatically. The key is loopback-only — do not share it.
+After changing the router, click Refresh on this provider and start a new chat — zCode caches whether a model accepts images.`);
 }
 
 // ---------- doctor ----------
@@ -248,6 +417,9 @@ async function cmdDoctor(args) {
     // No engine is not a failure: the bridge just stays inactive, as without the router.
     log(`INFO  vision bridge engine: ${engine ? engine.label : 'none available — pin one with \`vision-bridge engine <provider/model>\` to enable image pasting'}`);
   }
+  log(`INFO  zCode config: ${zcodeConfigPath()}${fs.existsSync(zcodeConfigPath()) ? '' : ' (not found)'}`);
+  log(`INFO  background service: ${serviceStatus().installed ? 'installed' : 'not installed'} — ${describeServiceTarget()}`);
+  log(`INFO  docker: ${dockerFilesPresent() ? `compose files in ${path.join(homeDir(), 'docker')}` : 'not installed'}`);
 
   finish();
 
@@ -318,8 +490,9 @@ async function cmdProviders(rest) {
     const baseURL = flag(tail, '--base-url');
     const models = (flag(tail, '--models') || '').split(',').map((s) => s.trim()).filter(Boolean);
     const vision = new Set((flag(tail, '--vision') || '').split(',').map((s) => s.trim()).filter(Boolean));
+    const messagesProtocol = new Set((flag(tail, '--messages') || '').split(',').map((s) => s.trim()).filter(Boolean));
     if (!id || !baseURL || models.length === 0) {
-      err('Usage: providers add-custom <id> --base-url URL --models a,b,c [--vision b]');
+      err('Usage: providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]');
       process.exitCode = 1;
       return;
     }
@@ -328,7 +501,7 @@ async function cmdProviders(rest) {
       ...(cfg.providers[id] || {}),
       enabled: true,
       baseURL,
-      models: models.map((m) => ({ id: m, vision: vision.has(m) })),
+      models: models.map((m) => ({ id: m, vision: vision.has(m), protocol: messagesProtocol.has(m) ? 'messages' : 'openai' })),
     };
     saveConfig(cfg);
     log(`Custom provider ${id} added (${models.length} models). Store its key: providers key ${id} set`);
@@ -383,7 +556,11 @@ function cmdModels(rest) {
     log('(no routable models — run `zcode-router setup`)');
     return;
   }
-  for (const m of items) log(`${m.id}  ${m.vision ? '[vision]' : '[text-only]'}`);
+  const engine = resolveVisionEngine(cfg);
+  for (const m of items) {
+    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+    log(`${m.id}  ${tag}`);
+  }
 }
 
 function noConfig() {

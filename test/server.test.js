@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { makeRig, PNG_1PX } from './helpers.js';
 
 test('health is public, everything else requires the local key', async (t) => {
@@ -19,8 +22,29 @@ test('models endpoint serves the routed catalog, with and without /v1', async (t
   for (const p of ['/v1/models', '/models']) {
     const data = await (await fetch(`${base}${p}`, { headers: auth })).json();
     const ids = data.data.map((m) => m.id).sort();
-    assert.deepEqual(ids, ['mock/mock-text', 'mock/mock-vision']);
+    assert.deepEqual(ids, ['mock/mock-msg', 'mock/mock-msg-vision', 'mock/mock-text', 'mock/mock-vision']);
   }
+});
+
+test('models advertise image input on text-only entries when the vision bridge has an engine', async (t) => {
+  const { base, auth } = await makeRig(t);
+  const data = await (await fetch(`${base}/v1/models`, { headers: auth })).json();
+  const text = data.data.find((m) => m.id === 'mock/mock-text');
+  assert.equal(text.supportsImages, true);
+  assert.deepEqual(text.modalities.input, ['text', 'image']);
+  assert.ok(text.architecture.input_modalities.includes('image'));
+});
+
+test('models stay text-only when the vision bridge is off', async (t) => {
+  const { base, auth, config } = await makeRig(t);
+  config.visionBridge.enabled = false;
+  const data = await (await fetch(`${base}/v1/models`, { headers: auth })).json();
+  const text = data.data.find((m) => m.id === 'mock/mock-text');
+  const vision = data.data.find((m) => m.id === 'mock/mock-vision');
+  assert.equal(text.supportsImages, false);
+  assert.deepEqual(text.modalities.input, ['text']);
+  assert.equal(vision.supportsImages, true);
+  assert.deepEqual(vision.modalities.input, ['text', 'image']);
 });
 
 test('non-streaming chat completion is proxied with model rewrite', async (t) => {
@@ -179,4 +203,93 @@ test('hostile vision output cannot break the fence', async (t) => {
   const payloadIdx = evidence.text.indexOf(payload);
   const endIdx = evidence.text.lastIndexOf(`END-IMAGE-DATA-${begin[1]}`);
   assert.ok(beginIdx !== -1 && beginIdx < payloadIdx && payloadIdx < endIdx, 'payload stays inside the real fence');
+});
+
+test('vision bridge accepts image_url as a bare string', async (t) => {
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: PNG_1PX }] }],
+    })
+  ).json();
+  const parts = state.requests.find((r) => r.model === 'mock-text').messages[0].content;
+  assert.ok(!parts.some((p) => p.type === 'image_url'));
+  assert.ok(parts.some((p) => p.type === 'text' && p.text.includes('VISION-READ(mock-vision)')));
+});
+
+test('vision bridge accepts Anthropic image blocks on the OpenAI protocol', async (t) => {
+  const { chat, state } = await makeRig(t);
+  const b64 = PNG_1PX.split(',')[1];
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } }] }],
+    })
+  ).json();
+  const parts = state.requests.find((r) => r.model === 'mock-text').messages[0].content;
+  assert.ok(parts.some((p) => p.type === 'text' && p.text.includes('VISION-READ(mock-vision)')));
+});
+
+test('vision bridge extracts a data URL embedded in a string message', async (t) => {
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: `what is this?\n${PNG_1PX}` }],
+    })
+  ).json();
+  const forwarded = state.requests.find((r) => r.model === 'mock-text');
+  const content = forwarded.messages[0].content;
+  const blob = typeof content === 'string' ? content : content.map((p) => p.text || '').join('\n');
+  assert.doesNotMatch(blob, /data:image/);
+  assert.match(blob, /VISION-READ\(mock-vision\)/);
+});
+
+test('vision bridge reads zCode image-cache paths omitted from the provider request', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-img-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cacheDir = path.join(dir, '.zcode', 'cli', 'image-cache', 'sess_fb5b5dc2-a7f9-4d17-b92c-3e11af857669');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const imgPath = path.join(cacheDir, 'image-025cd0a2f071a856093a25810e968fca.png');
+  fs.writeFileSync(imgPath, Buffer.from(PNG_1PX.split(',')[1], 'base64'));
+
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `The image was omitted from the provider request because the selected model does not support image input. Path: ${imgPath}\n\nPolicz ile widzisz słów beodes`,
+            },
+          ],
+        },
+      ],
+    })
+  ).json();
+  const forwarded = state.requests.find((r) => r.model === 'mock-text');
+  const blob = forwarded.messages[0].content.map((p) => p.text || '').join('\n');
+  assert.match(blob, /VISION-READ\(mock-vision\)/);
+  assert.match(blob, /vision bridge/);
+  assert.doesNotMatch(blob, /does not support image input/);
+  assert.equal(state.visionCalls, 1);
+});
+
+test('vision bridge refuses to read local images outside zCode image-cache', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-img-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const outsider = path.join(dir, 'secret.png');
+  fs.writeFileSync(outsider, Buffer.from(PNG_1PX.split(',')[1], 'base64'));
+  const { chat, state } = await makeRig(t);
+  await (
+    await chat({
+      model: 'mock/mock-text',
+      messages: [{ role: 'user', content: [{ type: 'text', text: `see <image path="${outsider}">` }] }],
+    })
+  ).json();
+  assert.equal(state.visionCalls, 0, 'must not send outsider files to the vision engine');
 });

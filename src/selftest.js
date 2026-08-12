@@ -79,6 +79,10 @@ function lastUserText(body) {
 
 const PNG_1PX =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+// Distinct payload so the bridge cache (keyed by image hash) does not dedupe
+// the Anthropic check against the earlier OpenAI check.
+const PNG_1PX_ALT =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 
 export async function runSelftest(log = console.log) {
   const results = [];
@@ -136,6 +140,8 @@ export async function runSelftest(log = console.log) {
     const models = await (await fetch(`${base}/v1/models`, { headers: auth })).json();
     const ids = models.data.map((m) => m.id);
     check('catalog lists routed models', ids.includes('mock/mock-text') && ids.includes('mock/mock-vision'), ids.join(', '));
+    const textModel = models.data.find((m) => m.id === 'mock/mock-text');
+    check('catalog advertises image input on bridged text-only models', textModel?.supportsImages === true && textModel?.modalities?.input?.includes('image'));
 
     const once = await chat(base, auth, { model: 'mock/mock-text', messages: [{ role: 'user', content: 'hello router' }] });
     check('non-streaming chat completion', once.status === 200 && (await once.json()).choices[0].message.content.includes('hello router'));
@@ -190,6 +196,58 @@ export async function runSelftest(log = console.log) {
     check(
       'evidence is fenced as untrusted data',
       Boolean(fenceMatch && fenced.text.includes('untrusted data') && fenced.text.includes(`END-IMAGE-DATA-${fenceMatch[1]}`))
+    );
+
+    // --- Anthropic Messages protocol (zCode's default) ---
+    const xkey = { 'x-api-key': config.localKey, 'content-type': 'application/json' };
+    const aRes = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: xkey,
+      body: JSON.stringify({ model: 'mock/mock-text', max_tokens: 64, messages: [{ role: 'user', content: 'hello messages' }] }),
+    });
+    const aJson = await aRes.json();
+    check(
+      'messages: non-streaming Anthropic shape via x-api-key',
+      aRes.status === 200 && aJson.type === 'message' && aJson.role === 'assistant' && aJson.content?.[0]?.text?.includes('hello messages') && aJson.stop_reason === 'end_turn'
+    );
+
+    const aStream = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: xkey,
+      body: JSON.stringify({ model: 'mock/mock-text', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'stream it' }] }),
+    });
+    const aBody = await aStream.text();
+    const events = [...aBody.matchAll(/^event: (\S+)/gm)].map((m) => m[1]);
+    check(
+      'messages: streaming Anthropic event sequence',
+      aStream.status === 200 && events[0] === 'message_start' && events.includes('content_block_delta') && events.at(-1) === 'message_stop'
+    );
+
+    mockState.requests.length = 0;
+    mockState.visionCalls = 0;
+    const aImg = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: xkey,
+      body: JSON.stringify({
+        model: 'mock/mock-text',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'what is this?' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1PX_ALT } },
+            ],
+          },
+        ],
+      }),
+    });
+    await aImg.json();
+    const aForwarded = mockState.requests.find((r) => r.model === 'mock-text');
+    const aParts = aForwarded?.messages?.find((m) => m.role === 'user')?.content || [];
+    check(
+      'messages: vision bridge handles Anthropic image blocks',
+      aRes.ok && mockState.visionCalls === 1 && !aParts.some((p) => p.type === 'image_url') && aParts.some((p) => p.text?.includes('MOCK-VISION-READ(mock-vision)'))
     );
   } finally {
     await close();
