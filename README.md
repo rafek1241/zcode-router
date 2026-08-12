@@ -1,4 +1,9 @@
-# zcode-router
+# zcode-router ![NPM Version](https://img.shields.io/npm/v/zcode-router?style=flat-square)
+
+
+<p align="center">
+  <img src="public/visualization.png" alt="zcode-router" width="640">
+</p>
 
 Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
