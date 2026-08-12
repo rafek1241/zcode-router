@@ -26,5 +26,9 @@
     "clinepass",
     "vision-bridge"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rafek1241/zcode-router"
+  }
 }
