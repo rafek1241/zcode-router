@@ -5,6 +5,10 @@
   <img src="public/visualization.png" alt="zcode-router" width="640">
 </p>
 
+<p align="center">
+  <video src="public/zcode-router-intro.mp4" controls width="640" preload="metadata"></video>
+</p>
+
 Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
 ## Quick start
