@@ -16,15 +16,16 @@ export function anthropicToOpenai(body) {
     }
     if (!Array.isArray(m.content)) continue;
     if (m.role === 'assistant') {
-      const texts = [];
+      const contentParts = [];
       const toolCalls = [];
       for (const b of m.content) {
-        if (b.type === 'text') texts.push(b.text || '');
+        if (b.type === 'text') contentParts.push({ type: 'text', text: b.text || '' });
+        else if (b.type === 'thinking' || b.type === 'redacted_thinking') contentParts.push(thinkingPart(b));
         else if (b.type === 'tool_use') {
           toolCalls.push({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } });
         }
       }
-      const msg = { role: 'assistant', content: texts.join('\n') || null };
+      const msg = { role: 'assistant', content: assistantContent(contentParts) };
       if (toolCalls.length) msg.tool_calls = toolCalls;
       messages.push(msg);
       continue;
@@ -51,8 +52,9 @@ export function anthropicToOpenai(body) {
         } else if (b.source?.type === 'url') {
           parts.push({ type: 'image_url', image_url: { url: b.source.url } });
         }
+      } else if (b.type === 'thinking' || b.type === 'redacted_thinking') {
+        parts.push(thinkingPart(b));
       }
-      // thinking/redacted_thinking/document blocks have no chat-completions equivalent
     }
     flush();
   }
@@ -81,6 +83,20 @@ export function anthropicToOpenai(body) {
 
 const STOP_REASON = { stop: 'end_turn', length: 'max_tokens', tool_calls: 'tool_use', content_filter: 'refusal' };
 
+function thinkingPart(b) {
+  const part = { type: b.type };
+  if (b.thinking != null) part.thinking = b.thinking;
+  if (b.signature != null) part.signature = b.signature;
+  if (b.data != null) part.data = b.data;
+  return part;
+}
+
+function assistantContent(parts) {
+  if (parts.some((p) => p.type === 'thinking' || p.type === 'redacted_thinking')) return parts;
+  const text = parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n');
+  return text || null;
+}
+
 export function mapStopReason(finish) {
   return STOP_REASON[finish] || (finish ? 'end_turn' : null);
 }
@@ -88,7 +104,15 @@ export function mapStopReason(finish) {
 export function openaiToAnthropic(resp, requestedModel) {
   const choice = resp.choices?.[0] || {};
   const content = [];
-  if (choice.message?.content) content.push({ type: 'text', text: choice.message.content });
+  const raw = choice.message?.content;
+  if (Array.isArray(raw)) {
+    for (const p of raw) {
+      if (p?.type === 'thinking' || p?.type === 'redacted_thinking') content.push(thinkingPart(p));
+      else if (p?.type === 'text' || typeof p?.text === 'string') content.push({ type: 'text', text: p.text || '' });
+    }
+  } else if (raw) {
+    content.push({ type: 'text', text: raw });
+  }
   for (const tc of choice.message?.tool_calls || []) {
     let input = {};
     try {
@@ -109,10 +133,6 @@ export function openaiToAnthropic(resp, requestedModel) {
       output_tokens: resp.usage?.completion_tokens ?? 0,
     },
   };
-}
-
-export function anthropicErrorShape(status, message, type = 'invalid_request_error') {
-  return { status, body: { type: 'error', error: { type, message } } };
 }
 
 // Translates an upstream OpenAI SSE byte stream into Anthropic Messages SSE
@@ -276,8 +296,14 @@ export function openaiToAnthropicRequest(body) {
     flushToolResults();
     if (m.role === 'assistant') {
       const content = [];
-      const text = typeof m.content === 'string' ? m.content : (m.content || []).map((p) => p.text || '').join('\n');
-      if (text) content.push({ type: 'text', text });
+      if (typeof m.content === 'string') {
+        if (m.content) content.push({ type: 'text', text: m.content });
+      } else {
+        for (const p of m.content || []) {
+          if (p.type === 'thinking' || p.type === 'redacted_thinking') content.push(thinkingPart(p));
+          else if (p.type === 'text' || typeof p.text === 'string') content.push({ type: 'text', text: p.text || '' });
+        }
+      }
       for (const tc of m.tool_calls || []) {
         let input = {};
         try {
@@ -296,6 +322,7 @@ export function openaiToAnthropicRequest(body) {
     const content = [];
     for (const p of m.content || []) {
       if (p.type === 'text') content.push({ type: 'text', text: p.text || '' });
+      else if (p.type === 'thinking' || p.type === 'redacted_thinking') content.push(thinkingPart(p));
       else if (p.type === 'image_url') {
         const url = p.image_url?.url || '';
         const dataMatch = url.match(/^data:([^;]+);base64,(.*)$/s);
@@ -339,15 +366,16 @@ export function openaiToAnthropicRequest(body) {
 const FROM_ANTHROPIC_STOP = { end_turn: 'stop', max_tokens: 'length', tool_use: 'tool_calls', stop_sequence: 'stop', refusal: 'content_filter' };
 
 export function anthropicToOpenaiResponse(resp, requestedModel) {
-  const textParts = [];
+  const contentParts = [];
   const toolCalls = [];
   for (const b of resp.content || []) {
-    if (b.type === 'text') textParts.push(b.text || '');
+    if (b.type === 'thinking' || b.type === 'redacted_thinking') contentParts.push(thinkingPart(b));
+    else if (b.type === 'text') contentParts.push({ type: 'text', text: b.text || '' });
     else if (b.type === 'tool_use') {
       toolCalls.push({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } });
     }
   }
-  const message = { role: 'assistant', content: textParts.join('\n') || null };
+  const message = { role: 'assistant', content: assistantContent(contentParts) };
   if (toolCalls.length) message.tool_calls = toolCalls;
   return {
     id: resp.id || 'chatcmpl_zcode_router',

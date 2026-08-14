@@ -22,7 +22,7 @@ test('models endpoint serves the routed catalog, with and without /v1', async (t
   for (const p of ['/v1/models', '/models']) {
     const data = await (await fetch(`${base}${p}`, { headers: auth })).json();
     const ids = data.data.map((m) => m.id).sort();
-    assert.deepEqual(ids, ['mock/mock-msg', 'mock/mock-msg-vision', 'mock/mock-text', 'mock/mock-vision']);
+    assert.deepEqual(ids, ['mock/mock-alias', 'mock/mock-msg', 'mock/mock-msg-vision', 'mock/mock-text', 'mock/mock-vision']);
   }
 });
 
@@ -32,7 +32,6 @@ test('models advertise image input on text-only entries when the vision bridge h
   const text = data.data.find((m) => m.id === 'mock/mock-text');
   assert.equal(text.supportsImages, true);
   assert.deepEqual(text.modalities.input, ['text', 'image']);
-  assert.ok(text.architecture.input_modalities.includes('image'));
 });
 
 test('models stay text-only when the vision bridge is off', async (t) => {
@@ -54,6 +53,13 @@ test('non-streaming chat completion is proxied with model rewrite', async (t) =>
   const json = await res.json();
   assert.match(json.choices[0].message.content, /hello/);
   assert.equal(state.requests[0].model, 'mock-text');
+});
+
+test('catalog id can map to a different upstream model id', async (t) => {
+  const { chat, state } = await makeRig(t);
+  const res = await chat({ model: 'mock/mock-alias', messages: [{ role: 'user', content: 'alias' }] });
+  assert.equal(res.status, 200);
+  assert.equal(state.requests.at(-1).model, 'real-upstream');
 });
 
 test('streaming SSE passes through byte-shaped chunks', async (t) => {
@@ -299,4 +305,61 @@ test('vision bridge refuses to read local images outside zCode image-cache', asy
     })
   ).json();
   assert.equal(state.visionCalls, 0, 'must not send outsider files to the vision engine');
+});
+
+test('non-2xx upstream is remembered for doctor', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-err-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const prev = process.env.ZCODE_ROUTER_HOME;
+  process.env.ZCODE_ROUTER_HOME = dir;
+  t.after(() => {
+    if (prev === undefined) delete process.env.ZCODE_ROUTER_HOME;
+    else process.env.ZCODE_ROUTER_HOME = prev;
+  });
+  const { chat } = await makeRig(t, {
+    upstreamHandler: (_req, res) => { res.writeHead(429).end('{"error":"quota"}'); },
+  });
+  await chat({ model: 'mock/mock-text', messages: [{ role: 'user', content: 'x' }] });
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'last-error.json'), 'utf8'));
+  assert.equal(saved.status, 429);
+  assert.equal(saved.routedId, 'mock/mock-text');
+  assert.match(saved.detail, /quota/);
+  assert.doesNotMatch(saved.detail, /mock-key/);
+});
+
+test('non-stream upstream fetch is aborted after timeout', async (t) => {
+  const prev = process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS;
+  process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS = '80';
+  t.after(() => {
+    if (prev === undefined) delete process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS;
+    else process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS = prev;
+  });
+  const { base, auth } = await makeRig(t, {
+    upstreamHandler: () => { /* never respond */ },
+  });
+  const res = await fetch(`${base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ model: 'mock/mock-text', messages: [{ role: 'user', content: 'x' }] }),
+    signal: AbortSignal.timeout(3000),
+  });
+  assert.equal(res.status, 502);
+});
+
+test('file parts on text-only models become fenced text before upstream', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-file-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, '.zcode', 'cli', 'file-cache', 'sess', 'note.txt');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'attached notes');
+  const { chat, state } = await makeRig(t);
+  const res = await chat({
+    model: 'mock/mock-text',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'see file' }, { type: 'file_url', file_url: { url: file } }] }],
+  });
+  assert.equal(res.status, 200);
+  const forwarded = state.requests.find((r) => r.model === 'mock-text');
+  const blob = JSON.stringify(forwarded);
+  assert.match(blob, /attached notes/);
+  assert.doesNotMatch(blob, /file_url/);
 });

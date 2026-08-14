@@ -287,6 +287,57 @@ test('vision bridge works when the engine is a messages-protocol model', async (
   assert.ok(parts.some((p) => p.type === 'text' && p.text.includes('VISION-READ(mock-msg-vision)')));
 });
 
+test('unit: thinking blocks round-trip through the OpenAI translation', async () => {
+  const { openaiToAnthropicRequest, anthropicToOpenaiResponse } = await import('../src/anthropic.js');
+  const openai = anthropicToOpenai({
+    model: 'p/m',
+    max_tokens: 32,
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'hmm', signature: 'sig' },
+          { type: 'text', text: 'answer' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'redacted_thinking', data: 'abc' },
+          { type: 'text', text: 'more' },
+        ],
+      },
+    ],
+  });
+  const assistant = openai.messages.find((m) => m.role === 'assistant');
+  assert.ok(Array.isArray(assistant.content));
+  assert.ok(assistant.content.some((p) => p.type === 'thinking' && p.thinking === 'hmm' && p.signature === 'sig'));
+  const user = openai.messages.find((m) => m.role === 'user');
+  assert.ok(user.content.some((p) => p.type === 'redacted_thinking' && p.data === 'abc'));
+
+  const back = openaiToAnthropicRequest(openai);
+  const backAsst = back.messages.find((m) => m.role === 'assistant');
+  assert.ok(backAsst.content.some((b) => b.type === 'thinking' && b.thinking === 'hmm' && b.signature === 'sig'));
+  const backUser = back.messages.find((m) => m.role === 'user');
+  assert.ok(backUser.content.some((b) => b.type === 'redacted_thinking' && b.data === 'abc'));
+
+  const resp = anthropicToOpenaiResponse(
+    {
+      id: 'msg_1',
+      content: [
+        { type: 'thinking', thinking: 'reason', signature: 's2' },
+        { type: 'text', text: 'hi' },
+      ],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 2 },
+    },
+    'p/m'
+  );
+  const round = openaiToAnthropic(resp, 'p/m');
+  assert.ok(round.content.some((b) => b.type === 'thinking' && b.thinking === 'reason' && b.signature === 's2'));
+  assert.ok(round.content.some((b) => b.type === 'text' && b.text === 'hi'));
+});
+
 test('unit: openaiToAnthropicRequest merges consecutive tool messages', async () => {
   const { openaiToAnthropicRequest, anthropicToOpenaiResponse } = await import('../src/anthropic.js');
   const out = openaiToAnthropicRequest({

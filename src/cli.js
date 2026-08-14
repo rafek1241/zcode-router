@@ -1,16 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import net from 'node:net';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile, isNpxCachePath } from './config.js';
-import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, isLoopback } from './providers.js';
+import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, setupEntries, applyProviderSelection } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
-import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
+import { patchZcodeConfig } from './zcode-config.js';
 import { describeServiceTarget, installService, serviceStatus, startService, stopService, uninstallService, localDir } from './service.js';
-import { dockerDown, dockerFilesPresent, dockerStatus, installDocker } from './docker.js';
+import { dockerDown, dockerStatus, installDocker } from './docker.js';
+import { pickProviders, renderVisionChoices, visionSetupChoice } from './setup-ui.js';
+import { applyDoctorFixes, collectDoctorChecks, formatDoctorReport } from './doctor.js';
+import { refreshCatalog } from './catalog-refresh.js';
+import { formatLastError, readLastError } from './last-error.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const runningFromNpxCache = isNpxCachePath(fileURLToPath(import.meta.url));
@@ -60,21 +63,26 @@ Getting started:
                                  Native background runner (Task Scheduler .vbs / systemd / launchd),
                                  runs from a self-contained copy in ${localDir()}
   docker [up|down|status]        Docker Compose (restart: unless-stopped). Default: up
-  doctor [--probe]               Verify config and print the exact zCode settings
+  doctor [--probe] [--json] [--fix]
+                                 Verify config and print the exact zCode settings
+                                 (--probe hits GET /models, --fix restores 0600 + registers the zCode provider)
+  doctor last                    Print the last upstream error (exit 1 if HTTP >= 400)
   selftest                       Full end-to-end check against a mock provider (no API key needed)
 
 Providers & models:
   providers                      List providers (enabled, key source, models)
-  providers enable|disable <id>  Toggle a provider (${Object.keys(REGISTRY).join(', ')})
+  providers enable|disable <id>  Toggle a provider (run \`providers\` for the full list)
   providers key <id> set|clear   Store/remove a provider API key (hidden prompt)
   providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]
   providers remove-custom <id>
   models                         List the catalog zCode will see
-  models vision <p/m> on|off     Override a model's image support flag
+  models vision <p/m> on|off     Override a model's image support flag (passthrough ids too)
   models add <p/m> [--vision] [--protocol messages]
                                  List a model that is not in the registry (new upstream
                                  models route through enabled providers anyway)
   models remove <p/m>            Remove a model added with \`models add\`
+  models refresh [id] [--prune]  GET /models and store new ids as extras
+                                 (omit id to refresh every enabled provider)
 
 Vision bridge (images -> vision model -> text evidence for text-only models):
   vision-bridge                  Status
@@ -83,7 +91,7 @@ Vision bridge (images -> vision model -> text evidence for text-only models):
   vision-bridge engine local --base-url http://127.0.0.1:1234/v1 --model qwen2.5vl:3b
 
 Maintenance:
-  zcode-patch                    Patch ~/.zcode/v2/config.json so zCode allows image attachments
+  zcode-patch                    Patch ~/.zcode/v2/config.json: image attachments + full model list from the router
   update                         Update the global npm package
   version                        Print version
 
@@ -98,36 +106,73 @@ async function cmdSetup() {
     process.exitCode = 1;
     return;
   }
+  if (runningFromNpxCache) {
+    log('You are running from npx. Option 3 (Manual) is unavailable here: npx uses a temporary cache.');
+    log('Pick Docker or the native service, or `npm install -g zcode-router` first.\n');
+  }
   const cfg = loadConfig() || defaultConfig();
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q) => new Promise((r) => rl.question(q, r));
+  let rl = createInterface({ input: process.stdin, output: process.stdout });
+  const makeAsk = () => (q) => new Promise((r) => rl.question(q, r));
+  let ask = makeAsk();
   try {
-    log('Available providers:');
-    const entries = listProviders(cfg);
+    const entries = setupEntries(cfg);
+    const alreadyOn = new Set();
     entries.forEach((p, i) => {
-      const state = p.enabled ? 'enabled' : 'disabled';
-      log(`  ${i + 1}. ${p.id} — ${p.label} [${state}]`);
+      if (p.enabled) alreadyOn.add(i + 1);
     });
-    const pick = await ask('\nEnable which? (numbers or ids, comma-separated, empty = keep current): ');
-    const chosen = pick.split(',').map((s) => s.trim()).filter(Boolean);
-    for (const c of chosen) {
-      const entry = entries[Number(c) - 1] || providerEntry(cfg, c);
-      if (!entry) {
-        err(`  skipping unknown provider "${c}"`);
-        continue;
-      }
-      cfg.providers[entry.id] = { ...(cfg.providers[entry.id] || {}), enabled: true };
-      const envKey = resolveKey(providerEntry(cfg, entry.id));
+    log('Choose every API to load. Numbers toggle [x]/[ ]; comma-separated is fine.');
+    log('Empty Enter continues to keys, then screenshots, then how to keep the router running.');
+    const chosen = await pickProviders({
+      entries,
+      selectedPositions: alreadyOn,
+      prompt: ask,
+      write: (s) => process.stdout.write(s),
+    });
+    cfg.providers = applyProviderSelection(cfg, chosen).providers;
+    rl.close();
+    for (const id of chosen) {
+      const entry = providerEntry(cfg, id);
+      if (entry.note) log(`  ${id}: ${entry.note}`);
+      const envKey = resolveKey(entry, cfg);
       if (envKey.key) {
-        log(`  ${entry.id}: key found (${envKey.source})`);
+        log(`  ${id}: key found (${envKey.source})`);
       } else {
-        const key = await hiddenPrompt(`  API key for ${entry.id} (input hidden, empty = skip): `);
-        if (key) cfg.providers[entry.id].key = key;
+        const key = await hiddenPrompt(`  API key for ${id} (input hidden, empty = skip): `);
+        if (key) cfg.providers[id].key = key;
       }
+    }
+    const engine = cfg.visionBridge?.engine;
+    if (engine && engine !== 'auto' && engine !== 'local' && !chosen.includes(engine.split('/')[0])) {
+      cfg.visionBridge = { ...(cfg.visionBridge || {}), engine: 'auto' };
+    }
+    rl = createInterface({ input: process.stdin, output: process.stdout });
+    ask = makeAsk();
+    const candidates = catalog(cfg).filter((m) => m.vision).map((m) => ({ id: m.id, label: m.id }));
+    log(`\n${renderVisionChoices({ candidates })}`);
+    let vision = visionSetupChoice(await ask('Choice [1]: '), { candidates });
+    while (vision.error) {
+      log(vision.error);
+      vision = visionSetupChoice(await ask('Choice [1]: '), { candidates });
+    }
+    if (vision.engine === 'off') {
+      cfg.visionBridge = { ...(cfg.visionBridge || {}), enabled: false, engine: 'auto', local: null };
+    } else if (vision.engine === 'local') {
+      const baseURL = (await ask('Local vision base URL [http://127.0.0.1:1234/v1]: ')).trim() || 'http://127.0.0.1:1234/v1';
+      assertSafeBaseURL(baseURL);
+      const model = (await ask('Local vision model id: ')).trim();
+      if (!model) {
+        err('local vision engine needs a model id — leaving engine at auto');
+        cfg.visionBridge = { ...(cfg.visionBridge || {}), enabled: true, engine: 'auto', local: null };
+      } else {
+        cfg.visionBridge = { enabled: true, engine: 'local', local: { baseURL, model } };
+      }
+    } else {
+      cfg.visionBridge = { ...(cfg.visionBridge || {}), enabled: true, engine: vision.engine, local: null };
     }
     saveConfig(cfg);
     log(`\nConfig written to ${configPath()} (mode 0600${process.platform === 'win32' ? ' + user-only ACL' : ''}).`);
     printZCodeBlock(cfg);
+    reportZcodePatch(patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg }));
     log('\nKeep the router running so ZCode can always reach it?');
     log(`  1) Native background service — ${describeServiceTarget()}`);
     log('  2) Docker (compose, restart: unless-stopped; ZCode still uses http://127.0.0.1)');
@@ -180,11 +225,7 @@ async function cmdStart(args) {
     err('runner (service/docker), or install a permanent copy with `npm install -g zcode-router`.\n');
   }
   const cfg = loadConfig();
-  if (!cfg) {
-    err(`No config at ${configPath()} yet. Run \`zcode-router setup\` first.`);
-    process.exitCode = 1;
-    return;
-  }
+  if (!cfg) return noConfig();
   const verbose = args.includes('--verbose') || process.env.ZCODE_ROUTER_VERBOSE === '1';
   const portIdx = args.indexOf('--port');
   if (portIdx !== -1) {
@@ -243,8 +284,8 @@ async function cmdStart(args) {
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
   if (engine) {
     log('zCode caches model capabilities: click Refresh on the provider, fully quit zCode, and start a new chat so it re-reads image support.');
-    reportZcodePatch(patchZcodeConfig({ port: cfg.port }));
   }
+  reportZcodePatch(patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg }));
   if (process.stdout.isTTY) log('Ctrl+C to stop. Keep this running while you use ZCode.');
   if (verbose) log('Verbose logging on — request headers, message text (redacted), and vision-bridge steps will be printed.');
   checkForUpdate(cfg).catch(() => {});
@@ -349,18 +390,28 @@ function reportZcodePatch(result) {
     err(`zCode config patch skipped: ${result.reason} (${result.path})`);
     return;
   }
-  if (result.patched === 0) {
+  if (result.registered > 0) {
+    log(`zCode config: registered provider ${result.names.join(', ')} in ${result.path}.`);
+    log(`Backup: ${result.backup}`);
+  }
+  if (result.patched === 0 && result.registered === 0 && result.filled === 0) {
     log(`zCode config: no router provider to patch in ${result.path}`);
     return;
   }
-  log(`zCode config: set image input on ${result.patched} model(s) in ${result.names.join(', ')}.`);
-  log(`Backup: ${result.backup}`);
+  if (result.filled > 0) {
+    log(`zCode config: pre-filled ${result.filled} model record(s) from the router catalog in ${result.names.join(', ')}.`);
+    log(`Backup: ${result.backup}`);
+  }
+  if (result.patched > 0) {
+    log(`zCode config: set image input on ${result.patched} model(s) in ${result.names.join(', ')}.`);
+    log(`Backup: ${result.backup}`);
+  }
   log('Fully quit zCode and start a new chat for the patch to apply.');
 }
 
 function cmdZcodePatch() {
   const cfg = loadConfig() || defaultConfig();
-  const result = patchZcodeConfig({ port: cfg.port });
+  const result = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg });
   reportZcodePatch(result);
   if (!result.ok && result.reason !== 'no-config') process.exitCode = 1;
 }
@@ -378,87 +429,31 @@ After changing the router, click Refresh on this provider and start a new chat �
 // ---------- doctor ----------
 
 async function cmdDoctor(args) {
-  let fail = 0;
-  const ok = (name, pass, detail = '') => {
-    if (!pass) fail += 1;
-    log(`${pass ? ' OK ' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
-  };
-
-  let cfg = null;
-  try {
-    cfg = loadConfig();
-    ok('config file', Boolean(cfg), configPath());
-  } catch (e) {
-    ok('config file', false, `${configPath()}: ${e.message}`);
-    return finish();
-  }
-  if (!cfg) return finish();
-
-  if (process.platform !== 'win32') {
-    const mode = fs.statSync(configPath()).mode & 0o777;
-    ok('config permissions', mode === 0o600, `mode ${mode.toString(8)}`);
-  }
-
-  ok('local key present', typeof cfg.localKey === 'string' && cfg.localKey.length >= 16);
-
-  const port = cfg.port || DEFAULT_PORT;
-  const running = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })
-    .then((r) => r.ok)
-    .catch(() => false);
-  if (running) {
-    ok('router process', true, `127.0.0.1:${port} responding`);
-  } else {
-    const portFree = await new Promise((resolve) => {
-      const probe = net.createServer();
-      probe.once('error', () => resolve(false));
-      probe.once('listening', () => probe.close(() => resolve(true)));
-      probe.listen(port, '127.0.0.1');
-    });
-    ok('port available', portFree, `127.0.0.1:${port} ${portFree ? 'free' : 'in use by another process'}`);
-  }
-
-  const models = catalog(cfg);
-  ok('routable models', models.length > 0, models.length ? `${models.length} model(s)` : 'none — run setup');
-
-  for (const p of listProviders(cfg)) {
-    if (!p.enabled) continue;
-    const { key, source } = resolveKey(p);
-    const keyless = isLoopback(p.baseURL);
-    ok(`provider ${p.id}`, Boolean(key) || keyless, key ? `key from ${source}` : keyless ? 'loopback, no key needed' : 'NO KEY');
-    if (args.includes('--probe') && key) {
-      try {
-        assertSafeBaseURL(p.baseURL);
-        const r = await fetch(`${p.baseURL.replace(/\/+$/, '')}/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
-        ok(`provider ${p.id} probe`, r.ok, `GET /models -> HTTP ${r.status} (free call)`);
-      } catch (e) {
-        ok(`provider ${p.id} probe`, false, e.message);
-      }
+  if (args[0] === 'last') {
+    const saved = readLastError({ maxAgeMs: Infinity });
+    if (!saved) {
+      log('none');
+      return;
     }
+    log(formatLastError(saved));
+    if (Number(saved.status) >= 400) process.exitCode = 1;
+    return;
   }
-
-  const vb = cfg.visionBridge;
-  if (vb?.enabled === false) {
-    log('INFO  vision bridge disabled — images to text-only models will be refused by the provider');
+  const probe = args.includes('--probe');
+  const asJson = args.includes('--json');
+  const fix = args.includes('--fix');
+  if (fix) {
+    const repaired = applyDoctorFixes();
+    for (const item of repaired.fixed) log(`fix  ${item}`);
+    for (const item of repaired.errors) err(`fix  ${item}`);
+  }
+  const result = await collectDoctorChecks({ probe });
+  if (asJson) {
+    log(JSON.stringify({ checks: result.checks, failed: result.failed }, null, 2));
   } else {
-    const engine = resolveVisionEngine(cfg);
-    // No engine is not a failure: the bridge just stays inactive, as without the router.
-    log(`INFO  vision bridge engine: ${engine ? engine.label : 'none available — pin one with \`vision-bridge engine <provider/model>\` to enable image pasting'}`);
+    log(formatDoctorReport(result));
   }
-  log(`INFO  zCode config: ${zcodeConfigPath()}${fs.existsSync(zcodeConfigPath()) ? '' : ' (not found)'}`);
-  log(`INFO  background service: ${serviceStatus().installed ? 'installed' : 'not installed'} — ${describeServiceTarget()}`);
-  log(`INFO  service snapshot: ${fs.existsSync(path.join(localDir(), 'bin', 'zcode-router.js')) ? `present in ${localDir()}` : 'none'}`);
-  log(`INFO  docker: ${dockerFilesPresent() ? `compose files in ${path.join(homeDir(), 'docker')}` : 'not installed'}`);
-
-  finish();
-
-  function finish() {
-    if (fail > 0) {
-      err(`\n${fail} check(s) failed.`);
-      process.exitCode = 1;
-    } else if (cfg) {
-      printZCodeBlock(cfg);
-    }
-  }
+  if (result.failed > 0) process.exitCode = 1;
 }
 
 // ---------- selftest ----------
@@ -474,9 +469,11 @@ async function cmdSelftest() {
 async function cmdProviders(rest) {
   const [sub, id, ...tail] = rest;
   if (!sub || sub === 'list') {
-    for (const p of listProviders(loadConfig() || defaultConfig())) {
-      const { key, source } = resolveKey(p);
-      log(`${p.enabled ? 'SHOW' : 'hide'}  ${p.id.padEnd(14)} ${p.label}  key:${key ? source : 'none'}  models:${p.models.length}`);
+    const listed = loadConfig() || defaultConfig();
+    const width = Math.max(14, ...listProviders(listed).map((p) => p.id.length));
+    for (const p of listProviders(listed)) {
+      const { key, source } = resolveKey(p, listed);
+      log(`${p.enabled ? 'SHOW' : 'hide'}  ${p.id.padEnd(width)} ${p.label}  key:${key ? source : 'none'}  models:${p.models.length}`);
     }
     return;
   }
@@ -557,37 +554,38 @@ function unknownProvider(id) {
   process.exitCode = 1;
 }
 
-function cmdModels(rest) {
+async function cmdModels(rest) {
   const cfg = loadConfig();
   const [sub, target, value] = rest;
   if (sub === 'vision') {
     if (!cfg) return noConfig();
-    const slash = target?.indexOf('/') ?? -1;
-    if (slash <= 0 || !['on', 'off'].includes(value)) {
+    const parsed = splitModelId(target);
+    if (!parsed || !['on', 'off'].includes(value)) {
       err('Usage: models vision <provider/model> on|off');
       process.exitCode = 1;
       return;
     }
-    const pid = target.slice(0, slash);
-    const mid = target.slice(slash + 1);
+    const { pid, mid } = parsed;
     const entry = providerEntry(cfg, pid);
-    if (!entry || !entry.models.some((m) => m.id === mid)) return unknownProvider(target);
+    if (!entry) return unknownProvider(pid);
     cfg.providers[pid] = cfg.providers[pid] || {};
-    cfg.providers[pid].overrides = { ...(cfg.providers[pid].overrides || {}), [mid]: { vision: value === 'on' } };
+    cfg.providers[pid].overrides = {
+      ...(cfg.providers[pid].overrides || {}),
+      [mid]: { ...(cfg.providers[pid].overrides?.[mid] || {}), vision: value === 'on' },
+    };
     saveConfig(cfg);
     log(`${target}: vision ${value}.`);
     return;
   }
   if (sub === 'add' || sub === 'remove') {
     if (!cfg) return noConfig();
-    const slash = target?.indexOf('/') ?? -1;
-    if (slash <= 0) {
+    const parsed = splitModelId(target);
+    if (!parsed) {
       err(`Usage: models ${sub} <provider/model>${sub === 'add' ? ' [--vision] [--protocol messages]' : ''}`);
       process.exitCode = 1;
       return;
     }
-    const pid = target.slice(0, slash);
-    const mid = target.slice(slash + 1);
+    const { pid, mid } = parsed;
     const entry = providerEntry(cfg, pid);
     if (!entry) return unknownProvider(target);
     cfg.providers[pid] = cfg.providers[pid] || {};
@@ -615,6 +613,48 @@ function cmdModels(rest) {
     log(`${target} removed.`);
     return;
   }
+  if (sub === 'refresh') {
+    if (!cfg) return noConfig();
+    const prune = rest.includes('--prune');
+    const ids = target && !target.startsWith('--')
+      ? [target]
+      : listProviders(cfg).filter((p) => p.enabled).map((p) => p.id);
+    if (ids.length === 0) {
+      err('No enabled providers to refresh.');
+      process.exitCode = 1;
+      return;
+    }
+    for (const id of ids) {
+      try {
+        const select = process.stdin.isTTY && !prune
+          ? async (novel) => {
+            if (novel.length === 0) return [];
+            log(`\nNew models on ${id}:`);
+            const picked = await pickProviders({
+              entries: novel.map((modelId) => ({ id: modelId, label: modelId, group: 'catalog' })),
+              selectedPositions: new Set(novel.map((_, i) => i + 1)),
+              allowEmpty: true,
+              prompt: (q) => new Promise((r) => {
+                const rl = createInterface({ input: process.stdin, output: process.stdout });
+                rl.question(q, (ans) => { rl.close(); r(ans); });
+              }),
+              write: (s) => process.stdout.write(s),
+            });
+            return picked;
+          }
+          : undefined;
+        const result = await refreshCatalog(cfg, id, { prune, select });
+        log(`${id}: added ${result.added.length}, kept ${result.kept.length}, skipped ${result.skipped.length}${prune ? `, pruned ${result.pruned.length}` : ''}`);
+        if (result.added.length) log(`  + ${result.added.join(', ')}`);
+        if (prune && result.pruned.length) log(`  - ${result.pruned.join(', ')}`);
+      } catch (e) {
+        err(`${id}: ${e.message}`);
+        process.exitCode = 1;
+      }
+    }
+    saveConfig(cfg);
+    return;
+  }
   if (!cfg) return noConfig();
   const items = catalog(cfg);
   if (items.length === 0) {
@@ -631,6 +671,12 @@ function cmdModels(rest) {
 function noConfig() {
   err(`No config at ${configPath()} yet. Run \`zcode-router setup\` first.`);
   process.exitCode = 1;
+}
+
+function splitModelId(target) {
+  const slash = target?.indexOf('/') ?? -1;
+  if (slash <= 0) return null;
+  return { pid: target.slice(0, slash), mid: target.slice(slash + 1) };
 }
 
 // ---------- vision-bridge ----------
@@ -710,7 +756,7 @@ async function checkForUpdate(cfg) {
   const resp = await fetch('https://registry.npmjs.org/zcode-router/latest', { signal: AbortSignal.timeout(3000) });
   if (!resp.ok) return;
   const { version } = await resp.json();
-  fs.writeFileSync(stateFile, JSON.stringify({ checkedAt: Date.now(), version }));
+  fs.writeFileSync(stateFile, JSON.stringify({ checkedAt: Date.now() }));
   if (isNewer(version, VERSION)) {
     err(`\nUpdate available: ${VERSION} -> ${version}. Run \`zcode-router update\`.\n`);
   }

@@ -58,7 +58,7 @@ export function defaultConfig() {
     localKey: crypto.randomBytes(24).toString('base64url'),
     port: DEFAULT_PORT,
     providers: {},
-    visionBridge: { enabled: true, engine: 'opencode-go/minimax-m3', local: null },
+    visionBridge: { enabled: true, engine: 'auto', local: null },
   };
 }
 

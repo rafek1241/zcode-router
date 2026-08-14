@@ -1,10 +1,11 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL } from './providers.js';
-import { homeDir, bindHost } from './config.js';
-import { VisionCache, bodyHasImage, bridgeImages, contentShape } from './vision.js';
+import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL, probeHeaders } from './providers.js';
+import { bindHost } from './config.js';
+import { VisionCache, bodyHasImage, bridgeImages, bridgeFiles, contentShape } from './vision.js';
 import { headerSummary, summarizeBody, looksLikeOmittedImage } from './debug.js';
+import { recordLastError } from './last-error.js';
 import {
   anthropicToOpenai,
   openaiToAnthropic,
@@ -87,7 +88,7 @@ export function resolveVisionEngine(config) {
   if (vb.engine && vb.engine !== 'auto') {
     const route = resolveModel(config, vb.engine);
     if (!route) return null;
-    return { baseURL: route.baseURL, key: route.key, model: route.modelId, protocol: route.meta.protocol, label: vb.engine };
+    return { baseURL: route.baseURL, key: route.key, model: route.upstreamModel, protocol: route.meta.protocol, label: vb.engine };
   }
   return autoVisionEngine(config);
 }
@@ -130,13 +131,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
             display_name: m.id,
             created_at: '2026-01-01T00:00:00Z',
             supportsImages: images,
-            supports_image_input: images,
             modalities: { input: images ? ['text', 'image'] : ['text'], output: ['text'] },
-            architecture: {
-              modality: images ? 'text+image->text' : 'text->text',
-              input_modalities: images ? ['text', 'image'] : ['text'],
-              output_modalities: ['text'],
-            },
           };
         });
         sendJson(res, 200, { object: 'list', data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
@@ -220,9 +215,12 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
     } else if (verbose) {
       log(`vision-bridge: skipped nativeVision=${route.meta.vision} hasImage=${hasImage} omittedHint=${omitted}`);
     }
+    await bridgeFiles(body, { log, cache: visionCache });
 
-    const upstreamBody = { ...body, model: route.modelId };
+    const upstreamBody = { ...body, model: route.upstreamModel };
     const messagesUpstream = route.meta.protocol === 'messages';
+    const timeoutMs = Number(process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS);
+    const ms = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 120_000;
     let upstream;
     try {
       upstream = await fetchImpl(`${route.baseURL}/${messagesUpstream ? 'messages' : 'chat/completions'}`, {
@@ -230,23 +228,47 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
         headers: {
           'content-type': 'application/json',
           accept: body.stream ? 'text/event-stream' : 'application/json',
-          ...(messagesUpstream
-            ? { 'x-api-key': route.key || '', 'anthropic-version': '2023-06-01' }
-            : route.key
-              ? { authorization: `Bearer ${route.key}` }
-              : {}),
+          ...probeHeaders(route.meta, route.key),
         },
         body: JSON.stringify(messagesUpstream ? openaiToAnthropicRequest(upstreamBody) : upstreamBody),
+        signal: !body.stream && ms > 0 ? AbortSignal.timeout(ms) : undefined,
       });
     } catch (err) {
+      recordLastError({
+        providerId: route.provider.id,
+        routedId: requestedModel,
+        upstreamModel: route.upstreamModel,
+        status: 502,
+        detail: err.message,
+      });
       (anthropic ? anthropicError : openaiError)(res, 502, `Upstream ${route.provider.id} unreachable: ${err.message}`);
       return;
     }
 
     log(`${body.stream ? 'stream' : 'once'} ${anthropic ? 'messages' : 'chat'} ${requestedModel} -> ${route.provider.id}/${route.modelId} [${upstream.status}] ${shape}${omitted ? ' omitted-hint' : ''}${hasImage ? ' has-image' : ''}`);
 
+    const rememberFail = (detail) => {
+      recordLastError({
+        providerId: route.provider.id,
+        routedId: requestedModel,
+        upstreamModel: route.upstreamModel,
+        status: upstream.status,
+        detail,
+      });
+    };
+
     if (!anthropic && !messagesUpstream) {
       // OpenAI-protocol client, OpenAI-protocol upstream: faithful byte pass-through.
+      if (!upstream.ok) {
+        const raw = await upstream.text().catch(() => '');
+        rememberFail(raw);
+        res.writeHead(upstream.status, {
+          'content-type': upstream.headers.get('content-type') || 'application/json',
+          'cache-control': 'no-cache',
+        });
+        res.end(raw);
+        return;
+      }
       res.writeHead(upstream.status, {
         'content-type': upstream.headers.get('content-type') || 'application/json',
         'cache-control': 'no-cache',
@@ -261,6 +283,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
 
     if (!upstream.ok) {
       const detail = (await upstream.text().catch(() => '')).slice(0, 300);
+      rememberFail(detail);
       (anthropic ? anthropicError : openaiError)(res, upstream.status, `Upstream ${route.provider.id} answered HTTP ${upstream.status}: ${detail}`);
       return;
     }
