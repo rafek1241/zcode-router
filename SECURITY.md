@@ -39,10 +39,12 @@ loopback key generated at setup.
   everything" reads as something the image says, not something you asked for.
 - **No shell-out with secrets.** Spawned processes are `icacls` (Windows ACL hardening),
   `npm` (`zcode-router update`), `schtasks` / `wscript` (Windows service), `systemctl`
-  (Linux), `launchctl` (macOS), and `docker`/`docker-compose`. Arguments are fixed or
-  paths under the user home; no key material is passed on the command line.
+  (Linux), `launchctl` (macOS), `docker`/`docker-compose`, and `pdftotext` (optional PDF
+  extraction; file bytes on stdin, no keys). Arguments are fixed or paths under the user
+  home; no key material is passed on the command line.
 - **No SSRF surface.** The router never fetches arbitrary URLs from request content: remote
   image URLs are passed *through* to the vision engine, not downloaded by the router.
+  Local file/image parts are read only from zCode's `image-cache` / `file-cache`.
 - **Supply chain.** Zero runtime dependencies — the entire attack surface is Node.js itself
   plus this repository. CI/release workflows pin actions by commit SHA and run with
   least-privilege `permissions:`. npm releases carry
@@ -54,9 +56,11 @@ loopback key generated at setup.
   host publish of `127.0.0.1` only.
 - Background install (`service install` / `docker`) writes user-level Task Scheduler /
   systemd / launchd / Compose files; it does not require Administrator / root.
-- `start` may patch `~/.zcode/v2/config.json` so zCode allows image attachments on router
-  models (backup `config.json.zcode-router-bak`). Integration is still a custom provider
-  entry you can delete.
+- `setup` / `start` / `doctor --fix` may upsert a `zcode-router` provider in
+  `~/.zcode/v2/config.json` (loopback URL + local key only, never upstream keys) and patch
+  image modalities (backup `config.json.zcode-router-bak`).
+- Last-error diagnostics (`~/.zcode-router/last-error.json`, mode 0600) store a redacted,
+  1 KiB-capped snippet — never API keys.
 - It does not implement OAuth flows; subscription providers are used with their API keys.
 
 ## Reporting

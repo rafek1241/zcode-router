@@ -7,7 +7,7 @@
 
 Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
-Point ZCode at **subscription providers** — **opencode Go**, **ClinePass**, **Z.ai GLM Coding Plan**, **Qwen plan**, **Command Code**, **MiniMax Token Plan**, **Ollama Cloud** — or plain APIs like DeepSeek, Kimi, Grok, and Anthropic — through one loopback endpoint. And it adds the missing
+Point ZCode at **subscription providers** — **opencode Go**, **ClinePass**, **Qwen plan**, **Command Code**, **MiniMax Token Plan**, **Ollama Cloud** — or plain APIs like DeepSeek, Kimi, Grok, and Anthropic — through one loopback endpoint. ZCode already ships **Z.ai GLM Coding Plan**, so this router does not duplicate it. And it adds the missing
 superpower: a **vision bridge**. Text-only models such as DeepSeek V4 Flash can't see
 pasted screenshots; the router transparently sends each image to a vision-capable
 model you choose and hands the text-only model the extracted evidence as text.
@@ -67,7 +67,7 @@ permanent copy of the package.
 
 ## Connect ZCode
 
-In ZCode: **Settings → Model Settings → Add Provider**, and paste what `setup` printed:
+`setup`, `start`, `zcode-patch`, and `doctor --fix` write a `zcode-router` provider into `~/.zcode/v2/config.json` when one is missing (loopback URL + the local key only). If zCode is not installed yet, paste what `setup` printed:
 
 | Field | Value |
 | --- | --- |
@@ -89,8 +89,7 @@ prints the exact model IDs to paste in manually (e.g. `opencode-go/deepseek-v4-f
 | --- | --- | --- |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` |
 | `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` / `CLINE_API_KEY` |
-| `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` / `ZAI_CODING_API_KEY` |
-| `qwen-plan` | Alibaba Model Studio token-plan endpoint | `QWEN_PLAN_API_KEY` / `DASHSCOPE_API_KEY` |
+| `qwen-plan` | Alibaba Model Studio token-plan (Singapore). Override with `QWEN_PLAN_BASE_URL` | `QWEN_PLAN_API_KEY` / `DASHSCOPE_API_KEY` |
 | `commandcode` | `https://api.commandcode.ai/provider/v1` | `COMMAND_CODE_API_KEY` / `COMMANDCODE_API_KEY` |
 | `minimax-token-plan` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
 | `ollama-cloud` | `https://ollama.com/v1` | `OLLAMA_API_KEY` |
@@ -108,7 +107,7 @@ prints the exact model IDs to paste in manually (e.g. `opencode-go/deepseek-v4-f
 
 ### Catalog-only
 
-These ship no preset model list (catalogs change too often). Enable, store a key, then type `provider/<id>` in ZCode or `zcode-router models add provider/<id>`:
+These ship no preset model list (catalogs change too often). Enable, store a key, then `zcode-router models refresh` (or type `provider/<id>` in ZCode / `models add`):
 
 `opencode-zen`, `groq`, `openrouter`, `together`, `fireworks`, `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, `chutes`.
 
@@ -135,6 +134,8 @@ appear in the model list and pin its capabilities:
 ```sh
 zcode-router models add opencode-go/new-model --vision --protocol messages
 zcode-router models remove opencode-go/new-model
+zcode-router models refresh groq
+zcode-router models vision groq/llama-3.3-70b on
 ```
 
 Environment variables win over stored keys. Keys entered during `setup` are stored in
@@ -171,7 +172,10 @@ image could not be read instead of being left to invent its contents.
 
 The catalog advertises image input on every routed model while a vision engine is
 configured, and `setup`/`start` patch `~/.zcode/v2/config.json` so zCode's own gate
-allows attachments.
+allows attachments. `setup` also asks how screenshots should work (`auto`, pin a vision
+model, a local LM Studio/Ollama engine, or `off`). Non-image attachments (PDFs, `file`
+parts in zCode's cache) are turned into fenced text the same way. After a failed
+upstream call, `zcode-router doctor last` prints the last error.
 
 ### Free, private, offline: a local vision model
 
