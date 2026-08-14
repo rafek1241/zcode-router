@@ -95,6 +95,7 @@ export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {})
           { id: 'mock-vision', vision: true },
           { id: 'mock-msg', vision: false, protocol: 'messages' },
           { id: 'mock-msg-vision', vision: true, protocol: 'messages' },
+          { id: 'mock-alias', vision: false, upstream: 'real-upstream' },
         ],
       },
     },

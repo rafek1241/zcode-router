@@ -22,7 +22,7 @@ test('models endpoint serves the routed catalog, with and without /v1', async (t
   for (const p of ['/v1/models', '/models']) {
     const data = await (await fetch(`${base}${p}`, { headers: auth })).json();
     const ids = data.data.map((m) => m.id).sort();
-    assert.deepEqual(ids, ['mock/mock-msg', 'mock/mock-msg-vision', 'mock/mock-text', 'mock/mock-vision']);
+    assert.deepEqual(ids, ['mock/mock-alias', 'mock/mock-msg', 'mock/mock-msg-vision', 'mock/mock-text', 'mock/mock-vision']);
   }
 });
 
@@ -54,6 +54,13 @@ test('non-streaming chat completion is proxied with model rewrite', async (t) =>
   const json = await res.json();
   assert.match(json.choices[0].message.content, /hello/);
   assert.equal(state.requests[0].model, 'mock-text');
+});
+
+test('catalog id can map to a different upstream model id', async (t) => {
+  const { chat, state } = await makeRig(t);
+  const res = await chat({ model: 'mock/mock-alias', messages: [{ role: 'user', content: 'alias' }] });
+  assert.equal(res.status, 200);
+  assert.equal(state.requests.at(-1).model, 'real-upstream');
 });
 
 test('streaming SSE passes through byte-shaped chunks', async (t) => {

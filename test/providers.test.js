@@ -96,3 +96,57 @@ test('every registry base URL is https', () => {
     assert.ok(p.baseURL.startsWith('https://'), p.baseURL);
   }
 });
+
+test('subscription providers from the codex-router catalog are registered', () => {
+  const ids = Object.keys(REGISTRY);
+  for (const id of [
+    'opencode-go', 'opencode-zen', 'clinepass', 'zai-coding', 'qwen-plan',
+    'commandcode', 'minimax-token-plan', 'ollama-cloud',
+    'deepseek', 'kimi-api', 'kimi-api-cn', 'grok-api', 'anthropic-api',
+    'gemini-api', 'groq', 'openrouter', 'together', 'fireworks', 'cerebras',
+    'mistral', 'nvidia-nim', 'siliconflow', 'huggingface', 'chutes',
+  ]) {
+    assert.ok(ids.includes(id), `missing provider ${id}`);
+  }
+  assert.ok(REGISTRY['zai-coding'].models.some((m) => m.id === 'glm-5.2'));
+  assert.ok(REGISTRY['qwen-plan'].models.some((m) => m.id === 'qwen3.8-max'));
+  assert.ok(REGISTRY.commandcode.models.some((m) => m.id === 'claude-opus-4.8' && m.protocol === 'messages'));
+  assert.equal(REGISTRY['anthropic-api'].protocol, 'messages');
+  assert.equal(REGISTRY.groq.models.length, 0, 'catalog-only providers ship no pinned models');
+});
+
+test('clinepass and commandcode rewrite the upstream model id', () => {
+  const cfg = cfgWith({
+    clinepass: { enabled: true, key: 'sk-cp' },
+    commandcode: { enabled: true, key: 'sk-cc' },
+    'minimax-token-plan': { enabled: true, key: 'sk-mm' },
+    'anthropic-api': { enabled: true, key: 'sk-an' },
+  });
+  const cline = resolveModel(cfg, 'clinepass/deepseek-v4-flash');
+  assert.equal(cline.modelId, 'deepseek-v4-flash');
+  assert.equal(cline.upstreamModel, 'cline-pass/deepseek-v4-flash');
+  const gemini = resolveModel(cfg, 'commandcode/gemini-3.5-flash');
+  assert.equal(gemini.upstreamModel, 'google/gemini-3.5-flash');
+  const claude = resolveModel(cfg, 'commandcode/claude-opus-4.8');
+  assert.equal(claude.meta.protocol, 'messages');
+  assert.equal(claude.upstreamModel, 'claude-opus-4-8');
+  assert.equal(resolveModel(cfg, 'minimax-token-plan/minimax-m3').upstreamModel, 'MiniMax-M3');
+  assert.equal(resolveModel(cfg, 'anthropic-api/claude-opus-4.8').meta.protocol, 'messages');
+  assert.equal(resolveModel(cfg, 'anthropic-api/claude-opus-4.8').upstreamModel, 'claude-opus-4-8');
+});
+
+test('kimi-k3 and qwen max on opencode-go are vision-capable', () => {
+  const cfg = cfgWith({ 'opencode-go': { enabled: true, key: 'sk-oc' } });
+  assert.equal(resolveModel(cfg, 'opencode-go/kimi-k3').meta.vision, true);
+  assert.equal(resolveModel(cfg, 'opencode-go/qwen3.8-max').meta.vision, true);
+});
+
+test('opencode-zen reuses the stored opencode-go key', () => {
+  const cfg = cfgWith({
+    'opencode-go': { enabled: true, key: 'sk-shared' },
+    'opencode-zen': { enabled: true },
+  });
+  const zen = resolveModel(cfg, 'opencode-zen/whatever');
+  assert.equal(zen.key, 'sk-shared');
+  assert.equal(zen.baseURL, 'https://opencode.ai/zen/v1');
+});

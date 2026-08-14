@@ -24,6 +24,9 @@
     "deepseek",
     "opencode",
     "clinepass",
+    "zai",
+    "qwen",
+    "openrouter",
     "vision-bridge"
   ],
   "license": "MIT",

@@ -87,7 +87,7 @@ export function resolveVisionEngine(config) {
   if (vb.engine && vb.engine !== 'auto') {
     const route = resolveModel(config, vb.engine);
     if (!route) return null;
-    return { baseURL: route.baseURL, key: route.key, model: route.modelId, protocol: route.meta.protocol, label: vb.engine };
+    return { baseURL: route.baseURL, key: route.key, model: route.upstreamModel, protocol: route.meta.protocol, label: vb.engine };
   }
   return autoVisionEngine(config);
 }
@@ -221,7 +221,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
       log(`vision-bridge: skipped nativeVision=${route.meta.vision} hasImage=${hasImage} omittedHint=${omitted}`);
     }
 
-    const upstreamBody = { ...body, model: route.modelId };
+    const upstreamBody = { ...body, model: route.upstreamModel };
     const messagesUpstream = route.meta.protocol === 'messages';
     let upstream;
     try {

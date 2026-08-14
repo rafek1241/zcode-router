@@ -7,8 +7,7 @@
 
 Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
-Point ZCode at **subscription providers** — **opencode Go**, **ClinePass**, or plain
-APIs like DeepSeek — through one loopback endpoint. And it adds the missing
+Point ZCode at **subscription providers** — **opencode Go**, **ClinePass**, **Z.ai GLM Coding Plan**, **Qwen plan**, **Command Code**, **MiniMax Token Plan**, **Ollama Cloud** — or plain APIs like DeepSeek, Kimi, Grok, and Anthropic — through one loopback endpoint. And it adds the missing
 superpower: a **vision bridge**. Text-only models such as DeepSeek V4 Flash can't see
 pasted screenshots; the router transparently sends each image to a vision-capable
 model you choose and hands the text-only model the extracted evidence as text.
@@ -30,6 +29,10 @@ npx zcode-router setup      # guided: pick providers, paste keys, then install
 
 `setup` walks you through the settings (which providers, their API keys), then asks
 how to keep the router running — ZCode needs it as a provider the whole time you work.
+
+The provider list is a toggle, not a one-shot prompt: type numbers (comma-separated is
+fine) to check `[x]` as many APIs as you want. Empty Enter is what continues to keys
+and then the Docker/service/manual choice. `a` selects all, `n` clears the set.
 Pick **Docker**:
 
 1. **Docker (recommended)** — copies the router into a `node:22-alpine` image with
@@ -80,16 +83,49 @@ prints the exact model IDs to paste in manually (e.g. `opencode-go/deepseek-v4-f
 
 ## Providers
 
+### Subscriptions
+
 | Provider ID | Endpoint | Key |
 | --- | --- | --- |
-| `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` env, or stored |
-| `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` env, or stored |
-| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` env, or stored |
+| `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` |
+| `clinepass` | `https://api.cline.bot/api/v1` | `CLINEPASS_API_KEY` / `CLINE_API_KEY` |
+| `zai-coding` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` / `ZAI_CODING_API_KEY` |
+| `qwen-plan` | Alibaba Model Studio token-plan endpoint | `QWEN_PLAN_API_KEY` / `DASHSCOPE_API_KEY` |
+| `commandcode` | `https://api.commandcode.ai/provider/v1` | `COMMAND_CODE_API_KEY` / `COMMANDCODE_API_KEY` |
+| `minimax-token-plan` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
+| `ollama-cloud` | `https://ollama.com/v1` | `OLLAMA_API_KEY` |
+
+### Vendor APIs
+
+| Provider ID | Endpoint | Key |
+| --- | --- | --- |
+| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `kimi-api` | `https://api.moonshot.ai/v1` | `KIMI_API_KEY` / `MOONSHOT_API_KEY` |
+| `kimi-api-cn` | `https://api.moonshot.cn/v1` | `KIMI_API_CN_KEY` |
+| `grok-api` | `https://api.x.ai/v1` | `XAI_API_KEY` / `GROK_API_KEY` |
+| `anthropic-api` | `https://api.anthropic.com/v1` (Messages) | `ANTHROPIC_API_KEY` |
+| `gemini-api` | Gemini OpenAI-compat endpoint | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+
+### Catalog-only
+
+These ship no preset model list (catalogs change too often). Enable, store a key, then type `provider/<id>` in ZCode or `zcode-router models add provider/<id>`:
+
+`opencode-zen`, `groq`, `openrouter`, `together`, `fireworks`, `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, `chutes`.
 
 `opencode-go` covers the full Go catalog: the Chat Completions models (DeepSeek V4,
 Kimi, GLM, MiMo, Grok, Hy3) and the MiniMax/Qwen models, which opencode serves only
 over its Anthropic Messages endpoint — the router translates both directions, so they
-work with either zCode protocol choice and with the vision bridge.
+work with either zCode protocol choice and with the vision bridge. `opencode-zen` shares
+the same stored key and points at the pay-per-use Zen endpoint.
+
+ClinePass upstream ids are rewritten to `cline-pass/…` automatically. Command Code
+keeps short catalog ids (`commandcode/glm-5.2`) and sends the vendor path upstream
+(`zai-org/GLM-5.2`). Claude models on Command Code and Anthropic use the Messages
+protocol.
+
+OAuth-only surfaces from Codex Router (Kimi Code CLI, Grok CLI) and Responses-only
+APIs (Meta, GitHub Copilot, opencode `gpt-5.6-luna`) are not in this registry: this
+router speaks Chat Completions and Anthropic Messages.
 
 The curated list is a starting point, not a gate: any `provider/model` on an enabled,
 keyed provider routes through — so when an upstream ships a new model, just type its
