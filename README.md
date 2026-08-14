@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <video src="public/zcode-router-intro.mp4" controls width="640" preload="metadata"></video>
+  <a href="public/zcode-router-intro.mp4"><img src="public/zcode-router-intro-thumb.png" alt="Watch the intro video" width="640"></a>
 </p>
 
 Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
