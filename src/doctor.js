@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { configPath, DEFAULT_PORT, homeDir, loadConfig } from './config.js';
-import { catalog, isLoopback, listProviders, resolveKey, assertSafeBaseURL } from './providers.js';
+import { catalog, isLoopback, listProviders, resolveKey, assertSafeBaseURL, probeHeaders } from './providers.js';
 import { resolveVisionEngine } from './server.js';
 import { dockerFilesPresent, dockerStatus } from './docker.js';
 import { describeServiceTarget, localDir, serviceStatus } from './service.js';
 import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
+import { readLastError, formatLastError } from './last-error.js';
 
 function add(checks, status, name, detail = '') {
   checks.push({ status, name, detail });
@@ -73,16 +74,24 @@ export async function collectDoctorChecks({
       `provider ${p.id}`,
       key ? `key from ${source}` : keyless ? 'loopback, no key needed' : 'NO KEY'
     );
-    if (probe && key) {
-      try {
-        assertSafeBaseURL(p.baseURL);
-        const r = await fetchImpl(`${p.baseURL.replace(/\/+$/, '')}/models`, {
-          headers: { authorization: `Bearer ${key}` },
-          signal: AbortSignal.timeout(10_000),
-        });
-        add(checks, r.ok ? 'ok' : 'fail', `provider ${p.id} probe`, `GET /models -> HTTP ${r.status} (free call)`);
-      } catch (e) {
-        add(checks, 'fail', `provider ${p.id} probe`, e.message);
+    if (probe) {
+      if (keyless || isLoopback(p.baseURL)) {
+        add(checks, 'info', `provider ${p.id} probe`, 'skipped (loopback)');
+      } else if (key) {
+        try {
+          assertSafeBaseURL(p.baseURL);
+          const r = await fetchImpl(`${p.baseURL.replace(/\/+$/, '')}/models`, {
+            headers: probeHeaders(p, key),
+            signal: AbortSignal.timeout(10_000),
+          });
+          let detail = `GET /models -> HTTP ${r.status} (free call)`;
+          if (r.ok && p.id === 'commandcode') {
+            detail += ' — /models 200 does not prove chat; Provider plan required';
+          }
+          add(checks, r.ok ? 'ok' : 'fail', `provider ${p.id} probe`, detail);
+        } catch (e) {
+          add(checks, 'fail', `provider ${p.id} probe`, e.message);
+        }
       }
     }
   }
@@ -99,6 +108,10 @@ export async function collectDoctorChecks({
       engine ? engine.label : 'none available — pin one with `vision-bridge engine <provider/model>` to enable image pasting'
     );
   }
+
+  const last = readLastError();
+  if (!last) add(checks, 'info', 'last upstream error', 'none');
+  else add(checks, 'warn', 'last upstream error', formatLastError(last).split('\n')[0]);
 
   const zpath = zcodeConfigPath();
   add(checks, 'info', 'zCode config', `${zpath}${fs.existsSync(zpath) ? '' : ' (not found)'}`);
@@ -149,7 +162,10 @@ export function applyDoctorFixes({ config } = {}) {
     fs.chmodSync(p, 0o600);
     fixed.push(`config permissions -> 0600 (${p})`);
   }
-  const patched = patchZcodeConfig({ port: cfg.port });
+  const patched = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey });
+  if (patched.ok && patched.registered > 0) {
+    fixed.push('zCode config: registered zcode-router provider');
+  }
   if (patched.ok && patched.patched > 0) {
     fixed.push(`zCode config: image input on ${patched.patched} model(s)`);
   }

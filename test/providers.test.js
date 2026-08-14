@@ -100,7 +100,7 @@ test('every registry base URL is https', () => {
 test('subscription providers from the codex-router catalog are registered', () => {
   const ids = Object.keys(REGISTRY);
   for (const id of [
-    'opencode-go', 'opencode-zen', 'clinepass', 'zai-coding', 'qwen-plan',
+    'opencode-go', 'opencode-zen', 'clinepass', 'qwen-plan',
     'commandcode', 'minimax-token-plan', 'ollama-cloud',
     'deepseek', 'kimi-api', 'kimi-api-cn', 'grok-api', 'anthropic-api',
     'gemini-api', 'groq', 'openrouter', 'together', 'fireworks', 'cerebras',
@@ -108,7 +108,7 @@ test('subscription providers from the codex-router catalog are registered', () =
   ]) {
     assert.ok(ids.includes(id), `missing provider ${id}`);
   }
-  assert.ok(REGISTRY['zai-coding'].models.some((m) => m.id === 'glm-5.2'));
+  assert.ok(!ids.includes('zai-coding'), 'ZCode already ships GLM Coding Plan — do not duplicate it');
   assert.ok(REGISTRY['qwen-plan'].models.some((m) => m.id === 'qwen3.8-max'));
   assert.ok(REGISTRY.commandcode.models.some((m) => m.id === 'claude-opus-4.8' && m.protocol === 'messages'));
   assert.equal(REGISTRY['anthropic-api'].protocol, 'messages');
@@ -139,6 +139,25 @@ test('kimi-k3 and qwen max on opencode-go are vision-capable', () => {
   const cfg = cfgWith({ 'opencode-go': { enabled: true, key: 'sk-oc' } });
   assert.equal(resolveModel(cfg, 'opencode-go/kimi-k3').meta.vision, true);
   assert.equal(resolveModel(cfg, 'opencode-go/qwen3.8-max').meta.vision, true);
+});
+
+test('passthrough models honor vision overrides without models add', () => {
+  const cfg = cfgWith({
+    groq: { enabled: true, key: 'sk-groq', overrides: { 'llama-3.3-70b': { vision: true } } },
+  });
+  assert.equal(resolveModel(cfg, 'groq/llama-3.3-70b').meta.vision, true);
+});
+
+test('qwen-plan base URL can be overridden by env', () => {
+  process.env.QWEN_PLAN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  try {
+    const entry = providerEntry(cfgWith({ 'qwen-plan': { enabled: true, key: 'sk-sp' } }), 'qwen-plan');
+    assert.equal(entry.baseURL, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
+  } finally {
+    delete process.env.QWEN_PLAN_BASE_URL;
+  }
+  const def = providerEntry(cfgWith({ 'qwen-plan': { enabled: true, key: 'sk-sp' } }), 'qwen-plan');
+  assert.match(def.baseURL, /token-plan\.ap-southeast-1/);
 });
 
 test('opencode-zen reuses the stored opencode-go key', () => {

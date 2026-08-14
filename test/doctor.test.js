@@ -82,3 +82,77 @@ test('collectDoctorChecks --probe hits GET /models with the stored key', async (
   });
   assert.ok(calls.some((c) => c.url.includes('api.deepseek.com') && c.auth === 'Bearer sk-probe'));
 });
+
+test('collectDoctorChecks --probe uses Anthropic headers and skips loopback', async (t) => {
+  tempHome(t);
+  const cfg = defaultConfig();
+  cfg.providers['anthropic-api'] = { enabled: true, key: 'sk-ant' };
+  cfg.providers.lmstudio = {
+    enabled: true,
+    baseURL: 'http://127.0.0.1:1234/v1',
+    models: [{ id: 'local', vision: false }],
+  };
+  saveConfig(cfg);
+  const calls = [];
+  const { checks } = await collectDoctorChecks({
+    probe: true,
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), headers: init?.headers || {} });
+      if (String(url).includes('/health')) throw new Error('down');
+      return { ok: true, status: 200 };
+    },
+    service: () => ({ installed: false }),
+    docker: () => ({ installed: false }),
+  });
+  const ant = calls.find((c) => c.url.includes('api.anthropic.com'));
+  assert.ok(ant, 'probed anthropic');
+  assert.equal(ant.headers['x-api-key'], 'sk-ant');
+  assert.equal(ant.headers['anthropic-version'], '2023-06-01');
+  assert.equal(ant.headers.authorization, undefined);
+  assert.equal(calls.some((c) => c.url.includes('127.0.0.1:1234')), false);
+  assert.ok(checks.some((c) => c.name === 'provider lmstudio probe' && c.status === 'info'));
+});
+
+test('collectDoctorChecks warns about a recent last upstream error', async (t) => {
+  const dir = tempHome(t);
+  const cfg = defaultConfig();
+  cfg.providers.deepseek = { enabled: true, key: 'sk' };
+  saveConfig(cfg);
+  fs.writeFileSync(
+    path.join(dir, 'last-error.json'),
+    JSON.stringify({
+      providerId: 'deepseek',
+      routedId: 'deepseek/deepseek-v4-flash',
+      upstreamModel: 'deepseek-v4-flash',
+      status: 429,
+      detail: 'quota',
+      at: Date.now(),
+    })
+  );
+  const { checks } = await collectDoctorChecks({
+    fetchImpl: async () => { throw new Error('offline'); },
+    service: () => ({ installed: false }),
+    docker: () => ({ installed: false }),
+  });
+  assert.ok(checks.some((c) => c.name === 'last upstream error' && c.status === 'warn' && /429/.test(c.detail)));
+});
+
+test('applyDoctorFixes registers the zCode provider when missing', async (t) => {
+  tempHome(t);
+  const cfg = defaultConfig();
+  saveConfig(cfg);
+  const zdir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-cfg-'));
+  t.after(() => fs.rmSync(zdir, { recursive: true, force: true }));
+  const zpath = path.join(zdir, 'config.json');
+  fs.writeFileSync(zpath, JSON.stringify({ provider: {} }) + '\n');
+  const prev = process.env.ZCODE_CONFIG;
+  process.env.ZCODE_CONFIG = zpath;
+  t.after(() => {
+    if (prev === undefined) delete process.env.ZCODE_CONFIG;
+    else process.env.ZCODE_CONFIG = prev;
+  });
+  const result = applyDoctorFixes({ config: cfg });
+  assert.ok(result.fixed.some((item) => /registered/.test(item)));
+  const data = JSON.parse(fs.readFileSync(zpath, 'utf8'));
+  assert.ok(Object.values(data.provider).some((p) => p.name === 'zcode-router'));
+});

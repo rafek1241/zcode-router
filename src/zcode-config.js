@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,22 +32,42 @@ function patchModel(model) {
   return changed;
 }
 
+function providerBucket(data) {
+  if (data.provider && typeof data.provider === 'object' && !Array.isArray(data.provider)) return { key: 'provider', providers: data.provider };
+  if (data.providers && typeof data.providers === 'object' && !Array.isArray(data.providers)) return { key: 'providers', providers: data.providers };
+  return null;
+}
+
+function newRouterProvider({ port, localKey }) {
+  return {
+    name: 'zcode-router',
+    options: {
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: localKey,
+    },
+    models: {},
+  };
+}
+
 // zCode caches modalities.input from the first model fetch and then omits
 // screenshots client-side. Patch every custom provider that points at this
 // router so a Refresh is not enough — the on-disk cache has to say "image".
-export function patchZcodeConfig({ port, configPath = zcodeConfigPath() } = {}) {
-  if (!fs.existsSync(configPath)) return { ok: false, reason: 'no-config', path: configPath, patched: 0 };
+// If none exists, insert one so setup/start do not require copy-paste.
+export function patchZcodeConfig({ port, configPath = zcodeConfigPath(), localKey } = {}) {
+  if (!fs.existsSync(configPath)) return { ok: false, reason: 'no-config', path: configPath, patched: 0, registered: 0 };
   let data;
   try {
     data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (err) {
-    return { ok: false, reason: err.message, path: configPath, patched: 0 };
+    return { ok: false, reason: err.message, path: configPath, patched: 0, registered: 0 };
   }
-  const providers = data.provider || data.providers || {};
-  if (typeof providers !== 'object' || Array.isArray(providers)) {
-    return { ok: false, reason: 'unexpected-schema', path: configPath, patched: 0 };
+  const bucket = providerBucket(data);
+  if (!bucket) {
+    return { ok: false, reason: 'unexpected-schema', path: configPath, patched: 0, registered: 0 };
   }
+  const { providers } = bucket;
   let patched = 0;
+  let registered = 0;
   const names = [];
   for (const [id, provider] of Object.entries(providers)) {
     if (typeof id === 'string' && id.startsWith('builtin:')) continue;
@@ -58,9 +79,15 @@ export function patchZcodeConfig({ port, configPath = zcodeConfigPath() } = {}) 
     }
     names.push(provider.name || id);
   }
-  if (patched === 0) return { ok: true, patched: 0, path: configPath, names };
+  if (names.length === 0 && typeof localKey === 'string' && localKey.length > 0) {
+    const id = crypto.randomUUID();
+    providers[id] = newRouterProvider({ port, localKey });
+    names.push('zcode-router');
+    registered = 1;
+  }
+  if (patched === 0 && registered === 0) return { ok: true, patched: 0, registered: 0, path: configPath, names };
   const backup = `${configPath}.zcode-router-bak`;
   if (!fs.existsSync(backup)) fs.copyFileSync(configPath, backup);
   fs.writeFileSync(configPath, JSON.stringify(data, null, 2) + '\n');
-  return { ok: true, patched, path: configPath, names, backup };
+  return { ok: true, patched, registered, path: configPath, names, backup };
 }

@@ -69,20 +69,13 @@ export const REGISTRY = {
       m('qwen3.8-max'),
     ],
   },
-  'zai-coding': {
-    label: 'Z.ai GLM Coding Plan (subscription)',
-    group: 'subscription',
-    baseURL: 'https://api.z.ai/api/coding/paas/v4',
-    keyEnv: ['ZAI_API_KEY', 'ZAI_CODING_API_KEY'],
-    note: 'Coding Plan key — not interchangeable with general Z.ai platform keys.',
-    models: [m('glm-5.2'), m('glm-5-turbo')],
-  },
   'qwen-plan': {
     label: 'Qwen / Alibaba Model Studio plan (subscription)',
     group: 'subscription',
     baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+    baseURLEnv: 'QWEN_PLAN_BASE_URL',
     keyEnv: ['QWEN_PLAN_API_KEY', 'DASHSCOPE_API_KEY'],
-    note: 'Plan keys (sk-sp- prefix). Override the endpoint with a custom base URL if your region differs.',
+    note: 'Plan keys (sk-sp- prefix). Singapore token-plan URL by default; set QWEN_PLAN_BASE_URL for another region.',
     models: [
       m('qwen3.8-max', { vision: true }),
       m('qwen3.8-max-preview', { vision: true }),
@@ -280,7 +273,8 @@ export function providerEntry(config, id) {
       label: base.label,
       group: base.group || 'api',
       note: base.note || null,
-      baseURL: user?.baseURL || base.baseURL,
+      protocol: base.protocol || 'openai',
+      baseURL: user?.baseURL || (base.baseURLEnv && process.env[base.baseURLEnv]) || base.baseURL,
       keyEnv: base.keyEnv,
       shareKeyWith: base.shareKeyWith || null,
       enabled: Boolean(user?.enabled),
@@ -294,6 +288,7 @@ export function providerEntry(config, id) {
     label: user.label || id,
     group: 'catalog',
     note: null,
+    protocol: 'openai',
     baseURL: user.baseURL,
     keyEnv: [],
     shareKeyWith: null,
@@ -387,11 +382,8 @@ export function resolveModel(config, routedId) {
   // byte-level proxy, and upstreams ship new models before the registry does —
   // typing `provider/new-model` in zCode just works (vision: false is the
   // conservative default; pin it with `models add ... --vision` if needed).
-  const meta = entry.models.find((model) => model.id === modelId) || {
-    id: modelId,
-    vision: false,
-    protocol: REGISTRY[providerId]?.protocol || 'openai',
-  };
+  const meta = entry.models.find((model) => model.id === modelId)
+    || hydrateModel(REGISTRY[providerId] || { protocol: 'openai' }, config?.providers?.[providerId], { id: modelId });
   return {
     provider: entry,
     modelId,
@@ -423,6 +415,13 @@ export function autoVisionEngine(config) {
         label: `${first.provider.id}/${first.modelId}`,
       }
     : null;
+}
+
+export function probeHeaders(entry, key) {
+  if (entry?.protocol === 'messages') {
+    return key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {};
+  }
+  return key ? { authorization: `Bearer ${key}` } : {};
 }
 
 export function isLoopback(url) {

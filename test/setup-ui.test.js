@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderProviderChoices, toggleSelection, pickProviders } from '../src/setup-ui.js';
+import { renderProviderChoices, toggleSelection, pickProviders, visionSetupChoice, renderVisionChoices } from '../src/setup-ui.js';
 
 const entries = [
   { id: 'opencode-go', label: 'opencode Go (subscription)', group: 'subscription', keyReady: true },
@@ -63,4 +63,33 @@ test('pickProviders stays on the list until empty Enter, then returns every togg
   assert.deepEqual(ids, ['opencode-go', 'deepseek']);
   assert.ok(writes.filter((w) => w.includes('[x] 1.')).length >= 2, 'list re-rendered after first toggle');
   assert.equal(prompts.length, 0, 'consumed the confirming empty Enter, not a later deployment prompt');
+});
+
+test('visionSetupChoice maps numbers to engine values', () => {
+  const candidates = [{ id: 'opencode-go/minimax-m3', label: 'opencode-go/minimax-m3' }];
+  assert.deepEqual(visionSetupChoice('1', { candidates }), { engine: 'auto' });
+  assert.deepEqual(visionSetupChoice('2', { candidates }), { engine: 'opencode-go/minimax-m3' });
+  assert.deepEqual(visionSetupChoice('off', { candidates }), { engine: 'off' });
+  assert.deepEqual(visionSetupChoice('local', { candidates }), { engine: 'local' });
+  assert.deepEqual(visionSetupChoice('', { candidates }), { engine: 'auto' });
+  assert.match(visionSetupChoice('9', { candidates }).error, /Invalid/);
+});
+
+test('renderVisionChoices lists auto, candidates, off, and local', () => {
+  const text = renderVisionChoices({ candidates: [{ id: 'opencode-go/minimax-m3', label: 'opencode-go/minimax-m3' }] });
+  assert.match(text, /1\. auto/);
+  assert.match(text, /2\. opencode-go\/minimax-m3/);
+  assert.match(text, /\boff\b/);
+  assert.match(text, /\blocal\b/);
+});
+
+test('pickProviders can confirm with an empty set when allowEmpty is set', async () => {
+  const ids = await pickProviders({
+    entries: [{ id: 'llama-3.3-70b', label: 'llama-3.3-70b', group: 'catalog' }],
+    selectedPositions: new Set(),
+    allowEmpty: true,
+    prompt: async () => '',
+    write: () => {},
+  });
+  assert.deepEqual(ids, []);
 });

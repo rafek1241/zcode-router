@@ -48,16 +48,38 @@ export function renderProviderChoices(entries, selected) {
   return lines.join('\n');
 }
 
-export async function pickProviders({ entries, selectedPositions = new Set(), prompt, write = () => {} }) {
+export async function pickProviders({ entries, selectedPositions = new Set(), prompt, write = () => {}, allowEmpty = false }) {
   let selected = new Set(selectedPositions);
   for (;;) {
     write(`${renderProviderChoices(entries, selected)}\n`);
     const raw = await prompt('Toggle numbers (comma-separated), a=all, n=none; empty Enter continues: ');
-    const result = toggleSelection(selected, raw, entries.length);
+    const result = toggleSelection(selected, raw, entries.length, { allowEmpty });
     selected = result.selected;
     if (result.error) write(`${result.error}\n`);
     else if (result.done) {
       return [...selected].sort((a, b) => a - b).map((position) => entries[position - 1].id);
     }
   }
+}
+
+export function renderVisionChoices({ candidates = [] } = {}) {
+  const lines = ['How should pasted screenshots work?', '  1. auto — cheap vision model from the enabled catalog, if any (default)'];
+  candidates.forEach((c, i) => {
+    lines.push(`  ${i + 2}. ${c.label || c.id}`);
+  });
+  lines.push('  off — disable the vision bridge (text-only models refuse images)');
+  lines.push('  local — LM Studio / Ollama on loopback');
+  return lines.join('\n');
+}
+
+export function visionSetupChoice(raw, { candidates = [] } = {}) {
+  const trimmed = String(raw || '').trim().toLowerCase();
+  if (trimmed === '' || trimmed === '1') return { engine: 'auto' };
+  if (trimmed === 'off') return { engine: 'off' };
+  if (trimmed === 'local') return { engine: 'local' };
+  const n = Number(trimmed);
+  if (Number.isInteger(n) && n >= 2 && n < 2 + candidates.length) {
+    return { engine: candidates[n - 2].id };
+  }
+  return { error: 'Invalid choice' };
 }

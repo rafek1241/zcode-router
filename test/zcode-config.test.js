@@ -41,4 +41,45 @@ test('patchZcodeConfig sets image modality on the loopback router provider only'
   assert.deepEqual(after.provider['builtin:zai'].models['glm-5.2'].modalities.input, ['text']);
   assert.deepEqual(after.provider.other.models.llama.modalities.input, ['text']);
   assert.equal(fs.existsSync(`${configPath}.zcode-router-bak`), true);
+  assert.equal(result.registered, 0);
+});
+
+test('patchZcodeConfig registers a zcode-router provider when none exists', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-cfg-'));
+  const configPath = path.join(dir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      provider: {
+        'builtin:zai': { name: 'Z.ai', models: { 'glm-5.2': { modalities: { input: ['text'] } } } },
+        other: {
+          name: 'ollama',
+          options: { baseURL: 'http://127.0.0.1:11434/v1' },
+          models: { llama: { modalities: { input: ['text'] } } },
+        },
+      },
+    }) + '\n'
+  );
+  const result = patchZcodeConfig({ port: 4279, localKey: 'loopback-key', configPath });
+  assert.equal(result.ok, true);
+  assert.equal(result.registered, 1);
+  const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const entry = Object.values(data.provider).find((p) => p.name === 'zcode-router');
+  assert.ok(entry, 'inserted a named zcode-router provider');
+  assert.equal(entry.options.baseURL, 'http://127.0.0.1:4279/v1');
+  assert.equal(entry.options.apiKey, 'loopback-key');
+  assert.deepEqual(data.provider['builtin:zai'].models['glm-5.2'].modalities.input, ['text']);
+  assert.deepEqual(data.provider.other.models.llama.modalities.input, ['text']);
+  assert.equal(fs.existsSync(`${configPath}.zcode-router-bak`), true);
+});
+
+test('patchZcodeConfig does not register without a localKey', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-cfg-'));
+  const configPath = path.join(dir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ provider: {} }) + '\n');
+  const result = patchZcodeConfig({ port: 4279, configPath });
+  assert.equal(result.ok, true);
+  assert.equal(result.registered, 0);
+  const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(Object.keys(data.provider).length, 0);
 });
