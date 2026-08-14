@@ -5,6 +5,7 @@
   <img src="public/visualization.png" alt="zcode-router" width="640">
 </p>
 
+### Watch the intro video
 <p align="center">
   <a href="public/zcode-router-intro.mp4"><img src="public/zcode-router-intro-thumb.png" alt="Watch the intro video" width="640"></a>
 </p>
