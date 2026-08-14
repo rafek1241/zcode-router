@@ -75,7 +75,7 @@ export async function collectDoctorChecks({
       key ? `key from ${source}` : keyless ? 'loopback, no key needed' : 'NO KEY'
     );
     if (probe) {
-      if (keyless || isLoopback(p.baseURL)) {
+      if (keyless) {
         add(checks, 'info', `provider ${p.id} probe`, 'skipped (loopback)');
       } else if (key) {
         try {

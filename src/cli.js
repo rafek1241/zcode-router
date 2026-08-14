@@ -225,11 +225,7 @@ async function cmdStart(args) {
     err('runner (service/docker), or install a permanent copy with `npm install -g zcode-router`.\n');
   }
   const cfg = loadConfig();
-  if (!cfg) {
-    err(`No config at ${configPath()} yet. Run \`zcode-router setup\` first.`);
-    process.exitCode = 1;
-    return;
-  }
+  if (!cfg) return noConfig();
   const verbose = args.includes('--verbose') || process.env.ZCODE_ROUTER_VERBOSE === '1';
   const portIdx = args.indexOf('--port');
   if (portIdx !== -1) {
@@ -559,14 +555,13 @@ async function cmdModels(rest) {
   const [sub, target, value] = rest;
   if (sub === 'vision') {
     if (!cfg) return noConfig();
-    const slash = target?.indexOf('/') ?? -1;
-    if (slash <= 0 || !['on', 'off'].includes(value)) {
+    const parsed = splitModelId(target);
+    if (!parsed || !['on', 'off'].includes(value)) {
       err('Usage: models vision <provider/model> on|off');
       process.exitCode = 1;
       return;
     }
-    const pid = target.slice(0, slash);
-    const mid = target.slice(slash + 1);
+    const { pid, mid } = parsed;
     const entry = providerEntry(cfg, pid);
     if (!entry) return unknownProvider(pid);
     cfg.providers[pid] = cfg.providers[pid] || {};
@@ -580,14 +575,13 @@ async function cmdModels(rest) {
   }
   if (sub === 'add' || sub === 'remove') {
     if (!cfg) return noConfig();
-    const slash = target?.indexOf('/') ?? -1;
-    if (slash <= 0) {
+    const parsed = splitModelId(target);
+    if (!parsed) {
       err(`Usage: models ${sub} <provider/model>${sub === 'add' ? ' [--vision] [--protocol messages]' : ''}`);
       process.exitCode = 1;
       return;
     }
-    const pid = target.slice(0, slash);
-    const mid = target.slice(slash + 1);
+    const { pid, mid } = parsed;
     const entry = providerEntry(cfg, pid);
     if (!entry) return unknownProvider(target);
     cfg.providers[pid] = cfg.providers[pid] || {};
@@ -675,6 +669,12 @@ function noConfig() {
   process.exitCode = 1;
 }
 
+function splitModelId(target) {
+  const slash = target?.indexOf('/') ?? -1;
+  if (slash <= 0) return null;
+  return { pid: target.slice(0, slash), mid: target.slice(slash + 1) };
+}
+
 // ---------- vision-bridge ----------
 
 function cmdVisionBridge(rest) {
@@ -752,7 +752,7 @@ async function checkForUpdate(cfg) {
   const resp = await fetch('https://registry.npmjs.org/zcode-router/latest', { signal: AbortSignal.timeout(3000) });
   if (!resp.ok) return;
   const { version } = await resp.json();
-  fs.writeFileSync(stateFile, JSON.stringify({ checkedAt: Date.now(), version }));
+  fs.writeFileSync(stateFile, JSON.stringify({ checkedAt: Date.now() }));
   if (isNewer(version, VERSION)) {
     err(`\nUpdate available: ${VERSION} -> ${version}. Run \`zcode-router update\`.\n`);
   }

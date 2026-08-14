@@ -135,10 +135,6 @@ export function openaiToAnthropic(resp, requestedModel) {
   };
 }
 
-export function anthropicErrorShape(status, message, type = 'invalid_request_error') {
-  return { status, body: { type: 'error', error: { type, message } } };
-}
-
 // Translates an upstream OpenAI SSE byte stream into Anthropic Messages SSE
 // events. One content block is open at a time; upstream sends text first and
 // tool calls sequentially, so a single open-block cursor is enough.

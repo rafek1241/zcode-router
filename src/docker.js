@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_PORT, homeDir, killFromPidfile, loadConfig } from './config.js';
+import { copyTree } from './service.js';
 
 const pkgRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 
@@ -46,17 +47,6 @@ export function composeYaml({ port, dataDir }) {
     '      ZCODE_ROUTER_BIND: 0.0.0.0',
     '',
   ].join('\n');
-}
-
-function copyTree(from, to) {
-  mkdirSync(to, { recursive: true });
-  for (const ent of readdirSync(from, { withFileTypes: true })) {
-    if (ent.name === 'node_modules' || ent.name === '.git') continue;
-    const src = join(from, ent.name);
-    const dest = join(to, ent.name);
-    if (ent.isDirectory()) copyTree(src, dest);
-    else copyFileSync(src, dest);
-  }
 }
 
 export function writeDockerFiles({ port, dataDir } = {}) {

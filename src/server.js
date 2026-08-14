@@ -1,7 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL } from './providers.js';
+import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL, probeHeaders } from './providers.js';
 import { bindHost } from './config.js';
 import { VisionCache, bodyHasImage, bridgeImages, bridgeFiles, contentShape } from './vision.js';
 import { headerSummary, summarizeBody, looksLikeOmittedImage } from './debug.js';
@@ -131,13 +131,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
             display_name: m.id,
             created_at: '2026-01-01T00:00:00Z',
             supportsImages: images,
-            supports_image_input: images,
             modalities: { input: images ? ['text', 'image'] : ['text'], output: ['text'] },
-            architecture: {
-              modality: images ? 'text+image->text' : 'text->text',
-              input_modalities: images ? ['text', 'image'] : ['text'],
-              output_modalities: ['text'],
-            },
           };
         });
         sendJson(res, 200, { object: 'list', data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: false });
@@ -234,11 +228,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
         headers: {
           'content-type': 'application/json',
           accept: body.stream ? 'text/event-stream' : 'application/json',
-          ...(messagesUpstream
-            ? { 'x-api-key': route.key || '', 'anthropic-version': '2023-06-01' }
-            : route.key
-              ? { authorization: `Bearer ${route.key}` }
-              : {}),
+          ...probeHeaders(route.meta, route.key),
         },
         body: JSON.stringify(messagesUpstream ? openaiToAnthropicRequest(upstreamBody) : upstreamBody),
         signal: !body.stream && ms > 0 ? AbortSignal.timeout(ms) : undefined,

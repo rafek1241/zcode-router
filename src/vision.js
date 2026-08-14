@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openaiToAnthropicRequest } from './anthropic.js';
+import { probeHeaders } from './providers.js';
 
 // Evidence-contract prompt: the text-only model downstream receives facts,
 // not an impression. The untrusted-content instruction is repeated in the
@@ -98,7 +99,8 @@ function textHasEmbeddedImage(s) {
 }
 
 function hasZcodeCachePath(s) {
-  return /[\\/]\.zcode[\\/](?:cli[\\/])?image-cache[\\/][^\s"'`<>]+\.(?:png|jpe?g|gif|webp|bmp)/i.test(s);
+  ZCODE_CACHE_RE.lastIndex = 0;
+  return ZCODE_CACHE_RE.test(s);
 }
 
 export function findZcodeCachePaths(text) {
@@ -111,12 +113,12 @@ export function isZcodeImageCachePath(p) {
   return n.includes('/.zcode/') && n.includes('/image-cache/');
 }
 
-export function isZcodeFileCachePath(p) {
+function isZcodeFileCachePath(p) {
   const n = String(p).replace(/\\/g, '/').toLowerCase();
   return n.includes('/.zcode/') && (n.includes('/image-cache/') || n.includes('/file-cache/'));
 }
 
-export function messageHasImage(msg) {
+function messageHasImage(msg) {
   if (typeof msg?.content === 'string') return textHasEmbeddedImage(msg.content);
   return Array.isArray(msg?.content) && msg.content.some((p) => isImagePart(p) || textHasEmbeddedImage(p?.text));
 }
@@ -314,11 +316,7 @@ async function describeImage(engine, imageUrl, fetchImpl, log, verbose) {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(messagesProtocol
-        ? { 'x-api-key': engine.key || '', 'anthropic-version': '2023-06-01' }
-        : engine.key
-          ? { authorization: `Bearer ${engine.key}` }
-          : {}),
+      ...probeHeaders({ protocol: engine.protocol }, engine.key),
     },
     body: JSON.stringify(messagesProtocol ? openaiToAnthropicRequest(openaiBody) : openaiBody),
   });

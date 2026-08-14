@@ -11,19 +11,19 @@ export const DARWIN_LABEL = 'com.zcode-router';
 
 const pkgRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 
-export function startCmdPath() {
+function startCmdPath() {
   return join(homeDir(), 'start.cmd');
 }
 
-export function startVbsPath() {
+function startVbsPath() {
   return join(homeDir(), 'start.vbs');
 }
 
-export function linuxUnitPath() {
+function linuxUnitPath() {
   return join(homedir(), '.config', 'systemd', 'user', LINUX_UNIT);
 }
 
-export function darwinPlistPath() {
+function darwinPlistPath() {
   return join(homedir(), 'Library', 'LaunchAgents', `${DARWIN_LABEL}.plist`);
 }
 
@@ -35,7 +35,7 @@ export function localDir() {
   return join(homeDir(), 'local');
 }
 
-function copyTree(from, to) {
+export function copyTree(from, to) {
   mkdirSync(to, { recursive: true });
   for (const ent of readdirSync(from, { withFileTypes: true })) {
     if (ent.name === 'node_modules' || ent.name === '.git') continue;

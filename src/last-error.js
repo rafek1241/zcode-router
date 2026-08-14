@@ -6,7 +6,7 @@ import { redactSecrets } from './debug.js';
 const MAX_DETAIL = 1024;
 const DAY_MS = 24 * 3600 * 1000;
 
-export function lastErrorPath() {
+function lastErrorPath() {
   return path.join(homeDir(), 'last-error.json');
 }
 

@@ -1,4 +1,4 @@
-export const GROUP_LABELS = {
+const GROUP_LABELS = {
   subscription: 'Subscriptions',
   api: 'Vendor APIs',
   catalog: 'Catalog-only (type any model id in ZCode)',

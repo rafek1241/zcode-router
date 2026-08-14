@@ -32,7 +32,6 @@ test('models advertise image input on text-only entries when the vision bridge h
   const text = data.data.find((m) => m.id === 'mock/mock-text');
   assert.equal(text.supportsImages, true);
   assert.deepEqual(text.modalities.input, ['text', 'image']);
-  assert.ok(text.architecture.input_modalities.includes('image'));
 });
 
 test('models stay text-only when the vision bridge is off', async (t) => {
