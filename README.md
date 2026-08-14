@@ -7,6 +7,20 @@
 
 Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
+## Quick start
+
+```powershell
+#Requires Node.js ≥ 22
+npx zcode-router setup
+```
+
+1. Setup your initial providers you want to use in zCode
+2. Select method of installation to automaticlaly run it everytime (docker, service, none - manually starting). I suggest to use docker.
+3. Restart zCode if you already ran it.
+4. That's it.
+
+## Description
+
 Point ZCode at **subscription providers** — **opencode Go**, **ClinePass**, **Qwen plan**, **Command Code**, **MiniMax Token Plan**, **Ollama Cloud** — or plain APIs like DeepSeek, Kimi, Grok, and Anthropic — through one loopback endpoint. ZCode already ships **Z.ai GLM Coding Plan**, so this router does not duplicate it. And it adds the missing
 superpower: a **vision bridge**. Text-only models such as DeepSeek V4 Flash can't see
 pasted screenshots; the router transparently sends each image to a vision-capable
