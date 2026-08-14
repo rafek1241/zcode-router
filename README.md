@@ -9,7 +9,7 @@ Local model router for [ZCode](https://zcode.z.ai) (the Z.ai ADE / ZCode Agent).
 
 ## Quick start
 
-```powershell
+```sh
 #Requires Node.js ≥ 22
 npx zcode-router setup
 ```
