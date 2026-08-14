@@ -67,7 +67,7 @@ permanent copy of the package.
 
 ## Connect ZCode
 
-`setup`, `start`, `zcode-patch`, and `doctor --fix` write a `zcode-router` provider into `~/.zcode/v2/config.json` when one is missing (loopback URL + the local key only). If zCode is not installed yet, paste what `setup` printed:
+`setup`, `start`, `zcode-patch`, and `doctor --fix` write a `zcode-router` provider into `~/.zcode/v2/config.json` when one is missing (loopback URL + the local key only) and pre-fill its model list with everything the router currently serves, so every provider/model pair is selectable in ZCode without a Refresh. If zCode is not installed yet, paste what `setup` printed:
 
 | Field | Value |
 | --- | --- |

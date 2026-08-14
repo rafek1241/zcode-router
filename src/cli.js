@@ -91,7 +91,7 @@ Vision bridge (images -> vision model -> text evidence for text-only models):
   vision-bridge engine local --base-url http://127.0.0.1:1234/v1 --model qwen2.5vl:3b
 
 Maintenance:
-  zcode-patch                    Patch ~/.zcode/v2/config.json so zCode allows image attachments
+  zcode-patch                    Patch ~/.zcode/v2/config.json: image attachments + full model list from the router
   update                         Update the global npm package
   version                        Print version
 
@@ -172,7 +172,7 @@ async function cmdSetup() {
     saveConfig(cfg);
     log(`\nConfig written to ${configPath()} (mode 0600${process.platform === 'win32' ? ' + user-only ACL' : ''}).`);
     printZCodeBlock(cfg);
-    reportZcodePatch(patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey }));
+    reportZcodePatch(patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg }));
     log('\nKeep the router running so ZCode can always reach it?');
     log(`  1) Native background service — ${describeServiceTarget()}`);
     log('  2) Docker (compose, restart: unless-stopped; ZCode still uses http://127.0.0.1)');
@@ -285,7 +285,7 @@ async function cmdStart(args) {
   if (engine) {
     log('zCode caches model capabilities: click Refresh on the provider, fully quit zCode, and start a new chat so it re-reads image support.');
   }
-  reportZcodePatch(patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey }));
+  reportZcodePatch(patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg }));
   if (process.stdout.isTTY) log('Ctrl+C to stop. Keep this running while you use ZCode.');
   if (verbose) log('Verbose logging on — request headers, message text (redacted), and vision-bridge steps will be printed.');
   checkForUpdate(cfg).catch(() => {});
@@ -394,9 +394,13 @@ function reportZcodePatch(result) {
     log(`zCode config: registered provider ${result.names.join(', ')} in ${result.path}.`);
     log(`Backup: ${result.backup}`);
   }
-  if (result.patched === 0 && result.registered === 0) {
+  if (result.patched === 0 && result.registered === 0 && result.filled === 0) {
     log(`zCode config: no router provider to patch in ${result.path}`);
     return;
+  }
+  if (result.filled > 0) {
+    log(`zCode config: pre-filled ${result.filled} model record(s) from the router catalog in ${result.names.join(', ')}.`);
+    log(`Backup: ${result.backup}`);
   }
   if (result.patched > 0) {
     log(`zCode config: set image input on ${result.patched} model(s) in ${result.names.join(', ')}.`);
@@ -407,7 +411,7 @@ function reportZcodePatch(result) {
 
 function cmdZcodePatch() {
   const cfg = loadConfig() || defaultConfig();
-  const result = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey });
+  const result = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg });
   reportZcodePatch(result);
   if (!result.ok && result.reason !== 'no-config') process.exitCode = 1;
 }

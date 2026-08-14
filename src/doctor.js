@@ -162,9 +162,12 @@ export function applyDoctorFixes({ config } = {}) {
     fs.chmodSync(p, 0o600);
     fixed.push(`config permissions -> 0600 (${p})`);
   }
-  const patched = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey });
+  const patched = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg });
   if (patched.ok && patched.registered > 0) {
     fixed.push('zCode config: registered zcode-router provider');
+  }
+  if (patched.ok && patched.filled > 0) {
+    fixed.push(`zCode config: pre-filled ${patched.filled} model record(s) from the router catalog`);
   }
   if (patched.ok && patched.patched > 0) {
     fixed.push(`zCode config: image input on ${patched.patched} model(s)`);
