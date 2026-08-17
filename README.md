@@ -1,4 +1,4 @@
-# zcode-router ![NPM Version](https://img.shields.io/npm/v/zcode-router?color=black&link=https%3A%2F%2Fwww.npmjs.com%2Fpackage%2Fzcode-router) ![Link for package npmjs.com](https://www.npmjs.com/package/zcode-router)
+# zcode-router ![NPM Version](https://img.shields.io/npm/v/zcode-router?color=black&link=https%3A%2F%2Fwww.npmjs.com%2Fpackage%2Fzcode-router) https://www.npmjs.com/package/zcode-router
 
 
 <p align="center">
