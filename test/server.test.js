@@ -403,10 +403,11 @@ test('file parts on text-only models become fenced text before upstream', async 
   assert.doesNotMatch(blob, /file_url/);
 });
 
-const protoUpstream = (hits, { messagesStatus = 200 } = {}) => async (req, res) => {
+const protoUpstream = (hits, { messagesStatus = 200, responsesStatus = 200 } = {}) => async (req, res) => {
   let raw = '';
   for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw);
+  hits.responses ??= 0;
   if (req.url.endsWith('/chat/completions')) {
     hits.openai += 1;
     res.writeHead(500, { 'content-type': 'application/json' });
@@ -434,11 +435,44 @@ const protoUpstream = (hits, { messagesStatus = 200 } = {}) => async (req, res) 
     res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: 'PROTO-OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
     return;
   }
+  if (req.url.endsWith('/responses')) {
+    hits.responses += 1;
+    if (responsesStatus !== 200) {
+      res.writeHead(responsesStatus).end('{"type":"error","error":{"type":"error","message":"nope"}}');
+      return;
+    }
+    if (body.stream) {
+      const ev = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(ev('response.created', { type: 'response.created', response: { id: 'resp_1' } }));
+      res.write(ev('response.output_text.delta', { type: 'response.output_text.delta', item_id: 'msg_1', output_index: 0, content_index: 0, delta: 'PROTO-OK' }));
+      res.write(
+        ev('response.completed', {
+          type: 'response.completed',
+          response: { id: 'resp_1', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'PROTO-OK' }] }], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+        })
+      );
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        id: 'resp_1',
+        object: 'response',
+        status: 'completed',
+        model: body.model,
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'PROTO-OK' }] }],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      })
+    );
+    return;
+  }
   res.writeHead(404).end();
 };
 
 test('wrong-protocol 500 probes the other protocol once and persists the lesson', async (t) => {
-  const hits = { openai: 0, messages: 0 };
+  const hits = { openai: 0, messages: 0, responses: 0 };
   const saves = [];
   const rig = await makeRig(t, {
     upstreamHandler: protoUpstream(hits),
@@ -452,6 +486,7 @@ test('wrong-protocol 500 probes the other protocol once and persists the lesson'
   assert.equal((await r1.json()).choices[0].message.content, 'PROTO-OK');
   assert.equal(hits.openai, 1);
   assert.equal(hits.messages, 1, 'one probe on the other protocol');
+  assert.equal(hits.responses, 0, 'stops at the first working protocol');
   assert.equal(rig.config.providers.mock.overrides['mock-probe'].protocol, 'messages');
   assert.equal(saves.length, 1);
   assert.equal(saves[0].providers.mock.overrides['mock-probe'].protocol, 'messages', 'lesson persisted to config');
@@ -462,10 +497,10 @@ test('wrong-protocol 500 probes the other protocol once and persists the lesson'
   assert.equal(hits.messages, 2);
 });
 
-test('when both protocols fail the original error passes through and the probe is not repeated', async (t) => {
-  const hits = { openai: 0, messages: 0 };
+test('when every protocol fails the original error passes through and the probe is not repeated', async (t) => {
+  const hits = { openai: 0, messages: 0, responses: 0 };
   const rig = await makeRig(t, {
-    upstreamHandler: protoUpstream(hits, { messagesStatus: 500 }),
+    upstreamHandler: protoUpstream(hits, { messagesStatus: 500, responsesStatus: 500 }),
     configOverrides: (config) => {
       config.providers.mock.models.push({ id: 'mock-broken', vision: false, protocol: 'openai' });
     },
@@ -475,16 +510,40 @@ test('when both protocols fail the original error passes through and the probe i
   assert.match(await r1.text(), /boom|Internal server error|nope/);
   assert.equal(hits.openai, 1);
   assert.equal(hits.messages, 1, 'probe ran once');
+  assert.equal(hits.responses, 1, 'responses tried last');
 
   const r2 = await rig.chat({ model: 'mock/mock-broken', messages: [{ role: 'user', content: 'hi' }] });
   assert.equal(r2.status, 500);
   assert.equal(hits.openai, 2, 'no re-probe: straight to the stamped protocol');
   assert.equal(hits.messages, 1);
+  assert.equal(hits.responses, 1);
   assert.equal(rig.config.providers.mock.overrides, undefined, 'nothing learned from a broken upstream');
 });
 
+test('responses-only 500s probe through to /responses and persist the lesson', async (t) => {
+  const hits = { openai: 0, messages: 0, responses: 0 };
+  const rig = await makeRig(t, {
+    upstreamHandler: protoUpstream(hits, { messagesStatus: 500 }),
+    configOverrides: (config) => {
+      config.providers.mock.models.push({ id: 'mock-spark', vision: false, protocol: 'messages' });
+    },
+  });
+  const r1 = await rig.chat({ model: 'mock/mock-spark', messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(r1.status, 200);
+  assert.equal((await r1.json()).choices[0].message.content, 'PROTO-OK');
+  assert.equal(hits.messages, 1);
+  assert.equal(hits.openai, 1, 'openai tried second');
+  assert.equal(hits.responses, 1, 'responses tried third and won');
+  assert.equal(rig.config.providers.mock.overrides['mock-spark'].protocol, 'responses');
+
+  const r2 = await rig.chat({ model: 'mock/mock-spark', messages: [{ role: 'user', content: 'again' }] });
+  assert.equal(r2.status, 200);
+  assert.equal(hits.messages, 1, 'learned override skips straight to responses');
+  assert.equal(hits.responses, 2);
+});
+
 test('streaming request takes the protocol probe and succeeds as SSE', async (t) => {
-  const hits = { openai: 0, messages: 0 };
+  const hits = { openai: 0, messages: 0, responses: 0 };
   const rig = await makeRig(t, {
     upstreamHandler: protoUpstream(hits),
     configOverrides: (config) => {
@@ -499,4 +558,20 @@ test('streaming request takes the protocol probe and succeeds as SSE', async (t)
   assert.match(text, /\[DONE\]/);
   assert.equal(hits.openai, 1);
   assert.equal(hits.messages, 1);
+});
+
+test('streaming request probes through to responses SSE', async (t) => {
+  const hits = { openai: 0, messages: 0, responses: 0 };
+  const rig = await makeRig(t, {
+    upstreamHandler: protoUpstream(hits, { messagesStatus: 500 }),
+    configOverrides: (config) => {
+      config.providers.mock.models.push({ id: 'mock-stream-rsp', vision: false, protocol: 'messages' });
+    },
+  });
+  const res = await rig.chat({ model: 'mock/mock-stream-rsp', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /PROTO-OK/);
+  assert.match(text, /\[DONE\]/);
+  assert.equal(hits.responses, 1);
 });

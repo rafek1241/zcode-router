@@ -141,9 +141,10 @@ keeps short catalog ids (`commandcode/glm-5.2`) and sends the vendor path upstre
 (`zai-org/GLM-5.2`). Claude models on Command Code and Anthropic use the Messages
 protocol.
 
-OAuth-only surfaces from Codex Router (Kimi Code CLI, Grok CLI) and Responses-only
-APIs (Meta, GitHub Copilot, opencode `gpt-5.6-luna`) are not in this registry: this
-router speaks Chat Completions and Anthropic Messages.
+OAuth-only surfaces from Codex Router (Kimi Code CLI, Grok CLI) are not in this
+registry. Responses-only models (opencode `muse-spark-1.3-contributor`,
+`gpt-5.6-luna`, Meta, GitHub Copilot) route through: the router translates
+Chat Completions / Messages to `/responses` upstream and back.
 
 The curated list is a starting point, not a gate: any `provider/model` on an enabled,
 keyed provider routes through — so when an upstream ships a new model, just type its
@@ -216,10 +217,11 @@ models default to text-only, and if a native image send is rejected with
 HTTP 400 or 422, the router retries exactly once through the bridge.
 
 Wire protocol self-heals the same way: if an upstream answers HTTP 500 because
-the router used the wrong protocol (OpenAI vs Anthropic Messages), the router
-probes the other protocol once, serves the request, and remembers the
-correction in `config.json` — no manual pinning. If both protocols fail, the
-upstream is simply broken and the error passes through unchanged.
+the router used the wrong protocol (OpenAI vs Anthropic Messages vs Responses),
+the router probes the other protocols in turn, serves the request, and remembers
+the correction in `config.json` — no manual pinning (`models add --protocol
+responses` also pins directly). If every protocol fails, the upstream is simply
+broken and the error passes through unchanged.
 
 ## Security
 

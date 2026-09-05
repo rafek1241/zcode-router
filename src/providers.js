@@ -35,6 +35,8 @@ export const REGISTRY = {
     // it, overriding stale `openai` stamps in stored extras.
     protocol: 'messages',
     models: [
+      m('muse-spark-1.3-contributor', { protocol: 'responses' }),
+      m('gpt-5.6-luna', { protocol: 'responses' }),
       m('minimax-m3', { protocol: 'messages' }),
       m('minimax-m2.7', { protocol: 'messages' }),
       m('minimax-m2.5', { protocol: 'messages' }),
@@ -240,11 +242,14 @@ export const REGISTRY = {
 /** Merge a registry row with user overrides into a routable model (protocol, upstream rename, vision pin). */
 function hydrateModel(base, user, model) {
   const e = typeof model === 'string' ? { id: model } : model;
-  // Provider-level protocol beats a model row's stamped one: the upstream
-  // speaks one protocol per endpoint, and rows stamped by older refreshes or
-  // `models add` defaults can carry a stale `openai` (opencode-go 500s on it).
-  // User overrides still win over everything.
-  const protocol = user?.overrides?.[e.id]?.protocol ?? base.protocol ?? e.protocol ?? 'openai';
+  // Provider-level protocol beats a stale stamped one: rows stamped by older
+  // refreshes or `models add` defaults can carry `openai` (opencode-go 500s on
+  // it). Two exceptions win: a user override, and `responses` — never a stale
+  // default, always an explicit pin or registry row (muse-spark). Registry rows
+  // also beat a stale extra duplicating the same id.
+  const registryProto = base.models?.find((row) => row.id === e.id)?.protocol;
+  const protocol =
+    user?.overrides?.[e.id]?.protocol ?? registryProto ?? (e.protocol === 'responses' ? 'responses' : base.protocol ?? e.protocol ?? 'openai');
   // Only an explicit user choice pins vision: `models vision <p/m> on|off`, or
   // `vision: true` on a user-added model (`models add --vision`, `add-custom
   // --vision`). Bare `false` is the old default, not a choice — it stays
@@ -260,7 +265,11 @@ export function providerEntry(config, id) {
   const user = config?.providers?.[id];
   if (!base && !user) return null;
   if (base) {
-    const extra = (user?.extra || []).map((model) => hydrateModel(base, user, model));
+    // Extras duplicating a registry id are stale (pre-registry refresh) — registry wins.
+    const registryIds = new Set(base.models.map((m) => m.id));
+    const extra = (user?.extra || [])
+      .filter((model) => !registryIds.has(typeof model === 'string' ? model : model.id))
+      .map((model) => hydrateModel(base, user, model));
     return {
       id,
       label: base.label,
@@ -454,6 +463,7 @@ export function probeHeaders(entry, key) {
   if (entry?.protocol === 'messages') {
     return key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {};
   }
+  // openai + responses both use Bearer.
   return key ? { authorization: `Bearer ${key}` } : {};
 }
 

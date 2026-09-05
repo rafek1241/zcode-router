@@ -98,10 +98,19 @@ test('refresh select callback keeps only picked new ids', async () => {
 });
 
 test('refreshed opencode-go extras inherit the messages protocol', async () => {
-  await withModelsServer({ data: [{ id: 'muse-spark-1.3-contributor' }] }, async (port) => {
+  await withModelsServer({ data: [{ id: 'shiny-new-model' }] }, async (port) => {
     const cfg = { providers: { 'opencode-go': { enabled: true, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1` } } };
     await refreshCatalog(cfg, 'opencode-go', { fetchImpl: fetch });
     assert.equal(cfg.providers['opencode-go'].extra[0].protocol, 'messages', 'provider-level protocol, not the openai default');
+  });
+});
+
+test('refreshed registry ids are skipped, never duplicated as extras', async () => {
+  await withModelsServer({ data: [{ id: 'muse-spark-1.3-contributor' }] }, async (port) => {
+    const cfg = { providers: { 'opencode-go': { enabled: true, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1` } } };
+    const result = await refreshCatalog(cfg, 'opencode-go', { fetchImpl: fetch });
+    assert.ok(result.skipped.includes('muse-spark-1.3-contributor'));
+    assert.equal(cfg.providers['opencode-go'].extra?.length || 0, 0);
   });
 });
 

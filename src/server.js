@@ -15,6 +15,7 @@ import {
   anthropicToOpenaiResponse,
   estimateTokens,
 } from './anthropic.js';
+import { openaiToResponsesRequest, responsesToOpenaiResponse, ResponsesStreamTranslator } from './responses.js';
 
 const MAX_BODY_BYTES = Number(process.env.ZCODE_ROUTER_MAX_BODY_BYTES) || 64 * 1024 * 1024;
 
@@ -244,19 +245,23 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
     await bridgeFiles(body, { log, cache: visionCache });
 
     let upstreamBody = { ...body, model: route.upstreamModel };
-    let messagesUpstream = route.meta.protocol === 'messages';
+    let wire = route.meta.protocol === 'messages' ? 'messages' : route.meta.protocol === 'responses' ? 'responses' : 'openai';
+    const originalWire = wire;
     const timeoutMs = Number(process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS);
     const ms = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 120_000;
-    const postUpstream = (payload) => fetchImpl(`${route.baseURL}/${messagesUpstream ? 'messages' : 'chat/completions'}`, {
+    const wirePath = (w) => (w === 'messages' ? 'messages' : w === 'responses' ? 'responses' : 'chat/completions');
+    const wirePayload = (w, payload) =>
+      w === 'messages' ? openaiToAnthropicRequest(payload) : w === 'responses' ? openaiToResponsesRequest(payload) : payload;
+    const postUpstream = (payload) => fetchImpl(`${route.baseURL}/${wirePath(wire)}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         accept: payload.stream ? 'text/event-stream' : 'application/json',
         // Auth headers match the protocol actually being POSTed, not the one
         // the model row claims — they diverge during a protocol probe.
-        ...probeHeaders({ protocol: messagesUpstream ? 'messages' : 'openai' }, route.key),
+        ...probeHeaders({ protocol: wire }, route.key),
       },
-      body: JSON.stringify(messagesUpstream ? openaiToAnthropicRequest(payload) : payload),
+      body: JSON.stringify(wirePayload(wire, payload)),
       signal: !payload.stream && ms > 0 ? AbortSignal.timeout(ms) : undefined,
     });
     let upstream;
@@ -296,25 +301,34 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
     }
 
     // Protocol self-learning: a Messages-only upstream answers an OpenAI-shaped
-    // POST with a generic 500 and vice versa. Probe the other protocol once;
-    // when it answers, persist the correction as a model override so future
-    // requests go straight to the right endpoint. Streams are safe here: the
-    // probe runs before any byte reaches the client.
+    // POST with a generic 500 and vice versa; Responses-only models (muse-spark)
+    // 500 on both. Probe the other protocols in turn; when one answers, persist
+    // the correction as a model override so future requests go straight to the
+    // right endpoint. Streams are safe here: the probe runs before any byte
+    // reaches the client.
     const probeKey = `${route.provider.id}/${route.modelId}@${route.baseURL}`;
     const probedRecently = (protocolProbeFailures.get(probeKey) || 0) > Date.now() - PROTOCOL_PROBE_FAIL_TTL_MS;
     if (!upstream.ok && upstream.status === 500 && !probedRecently) {
-      const learned = messagesUpstream ? 'openai' : 'messages';
-      log(`protocol probe: ${requestedModel} answered HTTP 500 as ${route.meta.protocol}, retrying once as ${learned}`);
-      messagesUpstream = learned === 'messages';
-      let probed = null;
-      try {
-        probed = await postUpstream(upstreamBody);
-      } catch {
-        /* unreachable on the other protocol too */
+      const candidates = ['messages', 'openai', 'responses'].filter((w) => w !== wire);
+      let learned = null;
+      for (const next of candidates) {
+        log(`protocol probe: ${requestedModel} answered HTTP 500 as ${wire}, retrying once as ${next}`);
+        wire = next;
+        let probed = null;
+        try {
+          probed = await postUpstream(upstreamBody);
+        } catch {
+          /* unreachable on the other protocol too */
+        }
+        if (probed?.ok) {
+          await upstream.arrayBuffer().catch(() => {}); // free the abandoned attempt's socket
+          upstream = probed;
+          learned = next;
+          break;
+        }
+        await probed?.arrayBuffer().catch(() => {});
       }
-      if (probed?.ok) {
-        await upstream.arrayBuffer().catch(() => {}); // free the abandoned attempt's socket
-        upstream = probed;
+      if (learned) {
         const slot = config.providers[route.provider.id] || (config.providers[route.provider.id] = {});
         slot.overrides = {
           ...(slot.overrides || {}),
@@ -327,12 +341,11 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
           /* persisting the lesson is best-effort; this request still succeeds */
         }
       } else {
-        // Both protocols failed: not a protocol problem. Remember it so a
-        // broken model doesn't pay a double upstream call on every request,
+        // Every protocol failed: not a protocol problem. Remember it so a
+        // broken model doesn't pay triple upstream calls on every request,
         // and serve the original failure unchanged.
         protocolProbeFailures.set(probeKey, Date.now());
-        await probed?.arrayBuffer().catch(() => {});
-        messagesUpstream = route.meta.protocol === 'messages';
+        wire = originalWire;
       }
     }
 
@@ -348,7 +361,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
       });
     };
 
-    if (!anthropic && !messagesUpstream) {
+    if (!anthropic && wire === 'openai') {
       // OpenAI-protocol client, OpenAI-protocol upstream: faithful byte pass-through.
       if (!upstream.ok) {
         const raw = await upstream.text().catch(() => '');
@@ -381,16 +394,26 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
 
     if (!body.stream) {
       const raw = await upstream.json();
-      const openaiShape = messagesUpstream ? anthropicToOpenaiResponse(raw, requestedModel) : raw;
+      const openaiShape =
+        wire === 'messages'
+          ? anthropicToOpenaiResponse(raw, requestedModel)
+          : wire === 'responses'
+            ? responsesToOpenaiResponse(raw, requestedModel)
+            : raw;
       if (anthropic) sendJson(res, 200, openaiToAnthropic(openaiShape, requestedModel));
       else sendJson(res, 200, openaiShape);
       return;
     }
 
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-    // For messages-protocol upstreams, normalize the SSE stream to OpenAI
-    // chunks first; an Anthropic client then gets them re-translated.
-    const upstreamTranslator = messagesUpstream ? new OpenAIStreamTranslator(requestedModel) : null;
+    // For non-OpenAI upstreams, normalize the SSE stream to OpenAI chunks
+    // first; an Anthropic client then gets them re-translated.
+    const upstreamTranslator =
+      wire === 'messages'
+        ? new OpenAIStreamTranslator(requestedModel)
+        : wire === 'responses'
+          ? new ResponsesStreamTranslator(requestedModel)
+          : null;
     const clientTranslator = anthropic ? new AnthropicStreamTranslator(requestedModel, `msg_${crypto.randomBytes(12).toString('hex')}`) : null;
     const reader = Readable.fromWeb(upstream.body);
     let buffer = '';

@@ -8,7 +8,7 @@ Things I would fix, ordered by how much they hurt the “install once, forget it
 - **ClinePass sent the catalog id upstream.** Cline wants `cline-pass/deepseek-v4-flash`. Models now have an `upstream` field (Command Code, MiniMax, Ollama Cloud Flash, Anthropic too).
 - **Default vision engine pinned to `opencode-go/minimax-m3`.** A DeepSeek-only config still claimed that engine. Default is `auto`.
 - **Stale vision flags** on opencode-go Kimi K3 / Qwen max (they take images; we treated them as text-only and always spent a bridge call). Gone: no hardcoded flags — image support resolves dynamically from models.dev/OpenRouter, pins via `models vision <p/m> on|off|auto`, and a native send rejected with 400 or 422 retries once through the bridge.
-- **Refreshed opencode-go extras spoke the wrong wire protocol.** Upstream chat is Anthropic Messages only; extras stamped `openai` 500'd on `/chat/completions` (muse-spark). Provider-level `protocol` now beats stale stamps at hydrate time, and a wrong-protocol 500 makes the router probe the other protocol once, serve the request, and persist the lesson as a model override in config.json (a failed probe is remembered for an hour so broken upstreams don't pay double calls).
+- **Refreshed opencode-go extras spoke the wrong wire protocol.** Upstream chat is Anthropic Messages only; extras stamped `openai` 500'd on `/chat/completions` (muse-spark). Provider-level `protocol` now beats stale stamps at hydrate time, and a wrong-protocol 500 makes the router probe the other protocols in turn (messages/openai/responses), serve the request, and persist the lesson as a model override in config.json (a failed probe is remembered for an hour so broken upstreams don't pay triple calls). `muse-spark-1.3-contributor` is Responses-only and routes via translation.
 - **Doctor was an untestable CLI blob.** Checks live in `src/doctor.js` (`collectDoctorChecks`, `formatDoctorReport`, `applyDoctorFixes`) with `--json` and `--fix`.
 - **ZCode provider was copy-paste.** `setup` / `start` / `zcode-patch` / `doctor --fix` upsert a `zcode-router` provider into `~/.zcode/v2/config.json`.
 - **Catalog-only providers showed an empty picker.** `models refresh` GETs `/models` and stores new ids as extras. Setup auto-runs it after keys and `start` re-runs it in the background for any provider still serving zero models (covers upgrades from preset-seeded registries), so the registry keeps only wire-protocol exceptions (`protocol: messages`, `upstream` renames) instead of seed lists that rot.
@@ -26,7 +26,7 @@ Things I would fix, ordered by how much they hurt the “install once, forget it
 
 ## Still omitted on purpose
 
-- **`gpt-5.6-luna` on opencode Go, Meta, GitHub Copilot** — Responses API. This router speaks Chat Completions and Anthropic Messages.
+- **`gpt-5.6-luna` on opencode Go, Meta, GitHub Copilot** — Responses API, translated via `src/responses.js` (muse-spark-1.3-contributor ships as a responses registry row).
 - **OAuth Kimi/Grok from Codex Router** — API-key twins (`kimi-api`, `grok-api`) are in the registry. `kimi login` is not.
 
 ## Not bugs

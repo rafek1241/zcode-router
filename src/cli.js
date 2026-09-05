@@ -75,11 +75,11 @@ Providers & models:
   providers                      List providers (enabled, key source, models)
   providers enable|disable <id>  Toggle a provider (run \`providers\` for the full list)
   providers key <id> set|clear   Store/remove a provider API key (hidden prompt)
-  providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]
+  providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d] [--responses e]
   providers remove-custom <id>
   models                         List the catalog zCode will see
   models vision <p/m> on|off|auto  Pin image support (auto = follow public catalogs)
-  models add <p/m> [--vision] [--protocol messages]
+  models add <p/m> [--vision] [--protocol messages|responses]
                                  List a model that is not in the registry (new upstream
                                  models route through enabled providers anyway)
   models remove <p/m>            Remove a model added with \`models add\`
@@ -561,8 +561,9 @@ async function cmdProviders(rest) {
     const models = (flag(tail, '--models') || '').split(',').map((s) => s.trim()).filter(Boolean);
     const vision = new Set((flag(tail, '--vision') || '').split(',').map((s) => s.trim()).filter(Boolean));
     const messagesProtocol = new Set((flag(tail, '--messages') || '').split(',').map((s) => s.trim()).filter(Boolean));
+    const responsesProtocol = new Set((flag(tail, '--responses') || '').split(',').map((s) => s.trim()).filter(Boolean));
     if (!id || !baseURL || models.length === 0) {
-      err('Usage: providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]');
+      err('Usage: providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d] [--responses e]');
       process.exitCode = 1;
       return;
     }
@@ -571,7 +572,7 @@ async function cmdProviders(rest) {
       ...(cfg.providers[id] || {}),
       enabled: true,
       baseURL,
-      models: models.map((m) => ({ id: m, vision: vision.has(m), protocol: messagesProtocol.has(m) ? 'messages' : 'openai' })),
+      models: models.map((m) => ({ id: m, vision: vision.has(m), protocol: messagesProtocol.has(m) ? 'messages' : responsesProtocol.has(m) ? 'responses' : 'openai' })),
     };
     saveConfig(cfg);
     log(`Custom provider ${id} added (${models.length} models). Store its key: providers key ${id} set`);
@@ -636,7 +637,7 @@ async function cmdModels(rest) {
     if (!cfg) return noConfig();
     const parsed = splitModelId(target);
     if (!parsed) {
-      err(`Usage: models ${sub} <provider/model>${sub === 'add' ? ' [--vision] [--protocol messages]' : ''}`);
+      err(`Usage: models ${sub} <provider/model>${sub === 'add' ? ' [--vision] [--protocol messages|responses]' : ''}`);
       process.exitCode = 1;
       return;
     }
@@ -645,7 +646,8 @@ async function cmdModels(rest) {
     if (!entry) return unknownProvider(target);
     cfg.providers[pid] = cfg.providers[pid] || {};
     if (sub === 'add') {
-      const spec = { id: mid, protocol: flag(rest, '--protocol') === 'messages' ? 'messages' : 'openai', ...(rest.includes('--vision') ? { vision: true } : {}) };
+      const pf = flag(rest, '--protocol');
+      const spec = { id: mid, protocol: pf === 'messages' ? 'messages' : pf === 'responses' ? 'responses' : 'openai', ...(rest.includes('--vision') ? { vision: true } : {}) };
       const extra = cfg.providers[pid].extra || [];
       const existing = extra.findIndex((m) => (typeof m === 'string' ? m : m.id) === mid);
       if (existing === -1) extra.push(spec);
