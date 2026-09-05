@@ -14,9 +14,12 @@ export function tempVisionCache() {
 /**
  * Shared test rig: mock upstream + router, both on loopback ephemeral ports.
  * `upstreamHandler` replaces the default OpenAI/Anthropic mock; `state`
- * records requests and vision calls for assertions.
+ * records requests and vision calls for assertions. `configOverrides` is
+ * spread over the base config, or called as a function with it (handy for
+ * patching the ephemeral mock URL). `saveImpl` replaces the router's config
+ * writer — default noop keeps tests away from the real config.json.
  */
-export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {}) {
+export async function makeRig(t, { configOverrides = {}, upstreamHandler, saveImpl } = {}) {
   const state = { requests: [], visionCalls: 0, anthropicRequests: [] };
   const upstream = http.createServer(
     upstreamHandler ||
@@ -113,14 +116,16 @@ export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {})
       },
     },
     visionBridge: { enabled: true, engine: 'auto', local: null },
-    ...configOverrides,
   };
+  const patch = typeof configOverrides === 'function' ? configOverrides(config) : configOverrides;
+  Object.assign(config, patch || {});
 
   const server = createRouter({
     config,
     log: () => {},
     fetchImpl: loopbackFetch,
     visionOpts: { cachePath: tempVisionCache() },
+    saveImpl: saveImpl || (() => {}),
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;

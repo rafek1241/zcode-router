@@ -402,3 +402,101 @@ test('file parts on text-only models become fenced text before upstream', async 
   assert.match(blob, /attached notes/);
   assert.doesNotMatch(blob, /file_url/);
 });
+
+const protoUpstream = (hits, { messagesStatus = 200 } = {}) => async (req, res) => {
+  let raw = '';
+  for await (const chunk of req) raw += chunk;
+  const body = JSON.parse(raw);
+  if (req.url.endsWith('/chat/completions')) {
+    hits.openai += 1;
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'error', message: 'Internal server error' } }));
+    return;
+  }
+  if (req.url.endsWith('/messages')) {
+    hits.messages += 1;
+    if (messagesStatus !== 200) {
+      res.writeHead(messagesStatus).end('{"type":"error","error":{"type":"error","message":"nope"}}');
+      return;
+    }
+    if (body.stream) {
+      const ev = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(ev('message_start', { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: body.model, content: [], usage: { input_tokens: 1, output_tokens: 0 } } }));
+      res.write(ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }));
+      res.write(ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'PROTO-OK' } }));
+      res.write(ev('content_block_stop', { type: 'content_block_stop', index: 0 }));
+      res.write(ev('message_stop', { type: 'message_stop' }));
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: 'PROTO-OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
+    return;
+  }
+  res.writeHead(404).end();
+};
+
+test('wrong-protocol 500 probes the other protocol once and persists the lesson', async (t) => {
+  const hits = { openai: 0, messages: 0 };
+  const saves = [];
+  const rig = await makeRig(t, {
+    upstreamHandler: protoUpstream(hits),
+    saveImpl: (cfg) => saves.push(JSON.parse(JSON.stringify(cfg))),
+    configOverrides: (config) => {
+      config.providers.mock.models.push({ id: 'mock-probe', vision: false, protocol: 'openai' });
+    },
+  });
+  const r1 = await rig.chat({ model: 'mock/mock-probe', messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(r1.status, 200, 'fallback answered the client');
+  assert.equal((await r1.json()).choices[0].message.content, 'PROTO-OK');
+  assert.equal(hits.openai, 1);
+  assert.equal(hits.messages, 1, 'one probe on the other protocol');
+  assert.equal(rig.config.providers.mock.overrides['mock-probe'].protocol, 'messages');
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].providers.mock.overrides['mock-probe'].protocol, 'messages', 'lesson persisted to config');
+
+  const r2 = await rig.chat({ model: 'mock/mock-probe', messages: [{ role: 'user', content: 'again' }] });
+  assert.equal(r2.status, 200);
+  assert.equal(hits.openai, 1, 'learned override skips the failing protocol');
+  assert.equal(hits.messages, 2);
+});
+
+test('when both protocols fail the original error passes through and the probe is not repeated', async (t) => {
+  const hits = { openai: 0, messages: 0 };
+  const rig = await makeRig(t, {
+    upstreamHandler: protoUpstream(hits, { messagesStatus: 500 }),
+    configOverrides: (config) => {
+      config.providers.mock.models.push({ id: 'mock-broken', vision: false, protocol: 'openai' });
+    },
+  });
+  const r1 = await rig.chat({ model: 'mock/mock-broken', messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(r1.status, 500);
+  assert.match(await r1.text(), /boom|Internal server error|nope/);
+  assert.equal(hits.openai, 1);
+  assert.equal(hits.messages, 1, 'probe ran once');
+
+  const r2 = await rig.chat({ model: 'mock/mock-broken', messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(r2.status, 500);
+  assert.equal(hits.openai, 2, 'no re-probe: straight to the stamped protocol');
+  assert.equal(hits.messages, 1);
+  assert.equal(rig.config.providers.mock.overrides, undefined, 'nothing learned from a broken upstream');
+});
+
+test('streaming request takes the protocol probe and succeeds as SSE', async (t) => {
+  const hits = { openai: 0, messages: 0 };
+  const rig = await makeRig(t, {
+    upstreamHandler: protoUpstream(hits),
+    configOverrides: (config) => {
+      config.providers.mock.models.push({ id: 'mock-stream', vision: false, protocol: 'openai' });
+    },
+  });
+  const res = await rig.chat({ model: 'mock/mock-stream', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /PROTO-OK/);
+  assert.match(text, /"delta":\{"role":"assistant"/);
+  assert.match(text, /\[DONE\]/);
+  assert.equal(hits.openai, 1);
+  assert.equal(hits.messages, 1);
+});
