@@ -29,6 +29,11 @@ export const REGISTRY = {
     group: 'subscription',
     baseURL: 'https://opencode.ai/zen/go/v1',
     keyEnv: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
+    // Chat upstream speaks Anthropic Messages only — an OpenAI-shaped POST to
+    // /chat/completions answers 500 (seen live on a refreshed muse-spark id).
+    // Set at provider level so refreshed extras and passthrough ids inherit
+    // it, overriding stale `openai` stamps in stored extras.
+    protocol: 'messages',
     models: [
       m('minimax-m3', { protocol: 'messages' }),
       m('minimax-m2.7', { protocol: 'messages' }),
@@ -235,7 +240,11 @@ export const REGISTRY = {
 /** Merge a registry row with user overrides into a routable model (protocol, upstream rename, vision pin). */
 function hydrateModel(base, user, model) {
   const e = typeof model === 'string' ? { id: model } : model;
-  const protocol = user?.overrides?.[e.id]?.protocol ?? e.protocol ?? base.protocol ?? 'openai';
+  // Provider-level protocol beats a model row's stamped one: the upstream
+  // speaks one protocol per endpoint, and rows stamped by older refreshes or
+  // `models add` defaults can carry a stale `openai` (opencode-go 500s on it).
+  // User overrides still win over everything.
+  const protocol = user?.overrides?.[e.id]?.protocol ?? base.protocol ?? e.protocol ?? 'openai';
   // Only an explicit user choice pins vision: `models vision <p/m> on|off`, or
   // `vision: true` on a user-added model (`models add --vision`, `add-custom
   // --vision`). Bare `false` is the old default, not a choice — it stays
@@ -278,7 +287,9 @@ export function providerEntry(config, id) {
     shareKeyWith: null,
     enabled: Boolean(user.enabled),
     storedKey: user.key || null,
-    models: (user.models || []).map((model) => hydrateModel({ protocol: 'openai' }, user, model)),
+    // No synthetic base protocol: add-custom stamps every model explicitly and
+    // those pins must not be shadowed by a provider-level default.
+    models: (user.models || []).map((model) => hydrateModel({}, user, model)),
     custom: true,
   };
 }

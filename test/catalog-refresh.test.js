@@ -59,7 +59,7 @@ test('plain ids are not registry-pinned: live refresh picks them up', async () =
     };
     const result = await refreshCatalog(cfg, 'opencode-go', { fetchImpl: fetch });
     assert.deepEqual(result.added, ['kimi-k3']);
-    assert.deepEqual(cfg.providers['opencode-go'].extra, [{ id: 'kimi-k3', protocol: 'openai' }]);
+    assert.deepEqual(cfg.providers['opencode-go'].extra, [{ id: 'kimi-k3', protocol: 'messages' }]);
   });
 });
 
@@ -94,6 +94,14 @@ test('refresh select callback keeps only picked new ids', async () => {
     const result = await refreshCatalog(cfg, 'groq', { fetchImpl: fetch, select: async (ids) => ids.filter((id) => id === 'b') });
     assert.deepEqual(result.added, ['b']);
     assert.deepEqual(cfg.providers.groq.extra.map((m) => m.id), ['b']);
+  });
+});
+
+test('refreshed opencode-go extras inherit the messages protocol', async () => {
+  await withModelsServer({ data: [{ id: 'muse-spark-1.3-contributor' }] }, async (port) => {
+    const cfg = { providers: { 'opencode-go': { enabled: true, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1` } } };
+    await refreshCatalog(cfg, 'opencode-go', { fetchImpl: fetch });
+    assert.equal(cfg.providers['opencode-go'].extra[0].protocol, 'messages', 'provider-level protocol, not the openai default');
   });
 });
 
