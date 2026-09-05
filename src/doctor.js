@@ -4,6 +4,7 @@ import path from 'node:path';
 import { configPath, DEFAULT_PORT, homeDir, loadConfig } from './config.js';
 import { catalog, isLoopback, listProviders, resolveKey, assertSafeBaseURL, probeHeaders } from './providers.js';
 import { resolveVisionEngine } from './server.js';
+import { visionSourcesStatus } from './vision-capabilities.js';
 import { dockerFilesPresent, dockerStatus } from './docker.js';
 import { describeServiceTarget, localDir, serviceStatus } from './service.js';
 import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
@@ -100,12 +101,19 @@ export async function collectDoctorChecks({
   if (vb?.enabled === false) {
     add(checks, 'info', 'vision bridge', 'disabled — images to text-only models will be refused by the provider');
   } else {
-    const engine = resolveVisionEngine(cfg);
+    const engine = await resolveVisionEngine(cfg);
     add(
       checks,
       'info',
       'vision bridge engine',
       engine ? engine.label : 'none available — pin one with `vision-bridge engine <provider/model>` to enable image pasting'
+    );
+    const src = visionSourcesStatus();
+    add(
+      checks,
+      'info',
+      'vision catalog cache',
+      src.ageMs === null ? 'empty — fetched on the first image request' : `age ${Math.round(src.ageMs / 3600000 * 10) / 10}h (${src.path})`
     );
   }
 

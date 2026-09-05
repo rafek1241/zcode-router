@@ -1,13 +1,17 @@
 // Built-in provider registry. Subscription providers (flat-rate plans) are the
-// point of this project; plain pay-per-use APIs work too. `vision: false` is
-// the conservative default — a model wrongly flagged vision-capable breaks
-// turns when the upstream rejects image parts, a model wrongly flagged
-// text-only just goes through the vision bridge.
+// point of this project; plain pay-per-use APIs work too.
+//
+// Image support is NOT stored here — it is looked up dynamically from public
+// catalogs (see vision-capabilities.js). `vision: true` on a user model means
+// an explicit pin ("send images natively"); `models vision <p/m> off` pins
+// text-only. Everything else resolves via lookup, unknown defaults to
+// text-only so the vision bridge picks it up.
 //
 // Catalog ids are `provider/id`. When upstream wants a different model string
 // (ClinePass `cline-pass/…`, Command Code `google/gemini-…`), set `upstream`.
+import { getVisionIndex, lookupVision, resolveVisionSupport } from './vision-capabilities.js';
 
-const m = (id, extra = {}) => ({ id, vision: false, protocol: 'openai', ...extra });
+const m = (id, extra = {}) => ({ id, protocol: 'openai', ...extra });
 
 export const GROUP_ORDER = ['subscription', 'api', 'catalog'];
 
@@ -22,18 +26,18 @@ export const REGISTRY = {
       m('deepseek-v4-pro'),
       m('glm-5.2'),
       m('glm-5.1'),
-      m('kimi-k3', { vision: true }),
+      m('kimi-k3'),
       m('kimi-k2.7-code'),
       m('kimi-k2.6'),
       m('mimo-v2.5'),
       m('mimo-v2.5-pro'),
       m('hy3'),
-      m('grok-4.5', { vision: true }),
-      m('minimax-m3', { vision: true, protocol: 'messages' }),
+      m('grok-4.5'),
+      m('minimax-m3', { protocol: 'messages' }),
       m('minimax-m2.7', { protocol: 'messages' }),
       m('minimax-m2.5', { protocol: 'messages' }),
-      m('qwen3.8-max', { vision: true, protocol: 'messages' }),
-      m('qwen3.7-max', { vision: true, protocol: 'messages' }),
+      m('qwen3.8-max', { protocol: 'messages' }),
+      m('qwen3.7-max', { protocol: 'messages' }),
       m('qwen3.7-plus', { protocol: 'messages' }),
       m('qwen3.6-plus', { protocol: 'messages' }),
     ],
@@ -77,11 +81,11 @@ export const REGISTRY = {
     keyEnv: ['QWEN_PLAN_API_KEY', 'DASHSCOPE_API_KEY'],
     note: 'Plan keys (sk-sp- prefix). Singapore token-plan URL by default; set QWEN_PLAN_BASE_URL for another region.',
     models: [
-      m('qwen3.8-max', { vision: true }),
-      m('qwen3.8-max-preview', { vision: true }),
-      m('qwen3.7-max', { vision: true }),
+      m('qwen3.8-max'),
+      m('qwen3.8-max-preview'),
+      m('qwen3.7-max'),
       m('qwen3.7-plus'),
-      m('qwen3.6-flash', { vision: true }),
+      m('qwen3.6-flash'),
       m('deepseek-v4-pro'),
       m('deepseek-v4-flash-0731'),
       m('glm-5.2'),
@@ -97,21 +101,21 @@ export const REGISTRY = {
       m('deepseek-v4-flash', { upstream: 'deepseek/deepseek-v4-flash' }),
       m('deepseek-v4-pro', { upstream: 'deepseek/deepseek-v4-pro' }),
       m('glm-5.2', { upstream: 'zai-org/GLM-5.2' }),
-      m('kimi-k3', { vision: true, upstream: 'moonshotai/Kimi-K3' }),
+      m('kimi-k3', { upstream: 'moonshotai/Kimi-K3' }),
       m('kimi-k2.7-code', { upstream: 'moonshotai/Kimi-K2.7-Code' }),
       m('mimo-v2.5-pro', { upstream: 'xiaomi/mimo-v2.5-pro' }),
-      m('minimax-m3', { vision: true, upstream: 'MiniMaxAI/MiniMax-M3' }),
+      m('minimax-m3', { upstream: 'MiniMaxAI/MiniMax-M3' }),
       m('minimax-m2.7', { upstream: 'MiniMaxAI/MiniMax-M2.7' }),
-      m('qwen3.8-max', { vision: true, upstream: 'Qwen/Qwen3.8-Max' }),
-      m('qwen3.7-max', { vision: true, upstream: 'Qwen/Qwen3.7-Max' }),
+      m('qwen3.8-max', { upstream: 'Qwen/Qwen3.8-Max' }),
+      m('qwen3.7-max', { upstream: 'Qwen/Qwen3.7-Max' }),
       m('qwen3.7-plus', { upstream: 'Qwen/Qwen3.7-Plus' }),
-      m('grok-4.5', { vision: true, upstream: 'xai/grok-4.5' }),
+      m('grok-4.5', { upstream: 'xai/grok-4.5' }),
       m('gemini-3.5-flash', { upstream: 'google/gemini-3.5-flash' }),
       m('gpt-5.5', { upstream: 'gpt-5.5' }),
       m('gpt-5.6-luna', { upstream: 'gpt-5.6-luna' }),
       m('hy3-paid', { upstream: 'tencent/hy3-paid' }),
       m('step-3.7-flash', { upstream: 'stepfun/Step-3.7-Flash' }),
-      m('claude-opus-4.8', { vision: true, protocol: 'messages', upstream: 'claude-opus-4-8' }),
+      m('claude-opus-4.8', { protocol: 'messages', upstream: 'claude-opus-4-8' }),
       m('claude-sonnet-5', { protocol: 'messages', upstream: 'claude-sonnet-5' }),
       m('claude-fable-5', { protocol: 'messages', upstream: 'claude-fable-5' }),
       m('claude-haiku-4.5', { protocol: 'messages', upstream: 'claude-haiku-4-5' }),
@@ -122,7 +126,7 @@ export const REGISTRY = {
     group: 'subscription',
     baseURL: 'https://api.minimax.io/v1',
     keyEnv: ['MINIMAX_API_KEY', 'MINIMAX_TOKEN_PLAN_API_KEY'],
-    models: [m('minimax-m3', { vision: true, upstream: 'MiniMax-M3' })],
+    models: [m('minimax-m3', { upstream: 'MiniMax-M3' })],
   },
   'ollama-cloud': {
     label: 'Ollama Cloud (subscription)',
@@ -132,7 +136,7 @@ export const REGISTRY = {
     models: [
       m('glm-5.2'),
       m('kimi-k2.7-code'),
-      m('minimax-m3', { vision: true }),
+      m('minimax-m3'),
       m('deepseek-v4-pro'),
       m('deepseek-v4-flash', { upstream: 'deepseek-v4-flash:cloud' }),
     ],
@@ -149,7 +153,7 @@ export const REGISTRY = {
     group: 'api',
     baseURL: 'https://api.moonshot.ai/v1',
     keyEnv: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
-    models: [m('kimi-k3', { vision: true })],
+    models: [m('kimi-k3')],
   },
   'kimi-api-cn': {
     label: 'Kimi Platform API (China)',
@@ -157,14 +161,14 @@ export const REGISTRY = {
     baseURL: 'https://api.moonshot.cn/v1',
     keyEnv: ['KIMI_API_CN_KEY', 'MOONSHOT_CN_API_KEY'],
     note: 'Keys are not interchangeable with the global platform.',
-    models: [m('kimi-k3', { vision: true })],
+    models: [m('kimi-k3')],
   },
   'grok-api': {
     label: 'xAI Grok API',
     group: 'api',
     baseURL: 'https://api.x.ai/v1',
     keyEnv: ['XAI_API_KEY', 'GROK_API_KEY'],
-    models: [m('grok-4.5', { vision: true })],
+    models: [m('grok-4.5')],
   },
   'anthropic-api': {
     label: 'Anthropic API',
@@ -172,7 +176,7 @@ export const REGISTRY = {
     baseURL: 'https://api.anthropic.com/v1',
     keyEnv: ['ANTHROPIC_API_KEY'],
     protocol: 'messages',
-    models: [m('claude-opus-4.8', { vision: true, protocol: 'messages', upstream: 'claude-opus-4-8' })],
+    models: [m('claude-opus-4.8', { protocol: 'messages', upstream: 'claude-opus-4-8' })],
   },
   'gemini-api': {
     label: 'Google Gemini API',
@@ -258,8 +262,13 @@ function hydrateModel(base, user, model) {
   const e = typeof model === 'string' ? { id: model } : model;
   const protocol = user?.overrides?.[e.id]?.protocol ?? e.protocol ?? base.protocol ?? 'openai';
   const vision = user?.overrides?.[e.id]?.vision ?? e.vision ?? false;
+  // Only an explicit user choice pins vision: `models vision <p/m> on|off`, or
+  // `vision: true` on a user-added model (`models add --vision`, `add-custom
+  // --vision`). Bare `false` is the old default, not a choice — it stays
+  // dynamic so catalogs can upgrade the model later.
+  const visionPin = user?.overrides?.[e.id]?.vision ?? (e.vision === true ? true : undefined);
   const upstream = e.upstream || (base.upstreamPrefix ? `${base.upstreamPrefix}${e.id}` : undefined);
-  return { id: e.id, vision, protocol, ...(upstream ? { upstream } : {}) };
+  return { id: e.id, vision, protocol, ...(upstream ? { upstream } : {}), ...(visionPin === undefined ? {} : { visionPin }) };
 }
 
 export function providerEntry(config, id) {
@@ -380,8 +389,8 @@ export function resolveModel(config, routedId) {
   if (!key && !isLoopback(entry.baseURL)) return null;
   // Passthrough: models not in the curated list still route. The router is a
   // byte-level proxy, and upstreams ship new models before the registry does —
-  // typing `provider/new-model` in zCode just works (vision: false is the
-  // conservative default; pin it with `models add ... --vision` if needed).
+  // typing `provider/new-model` in zCode just works (image support resolves
+  // dynamically; pin it with `models vision <p/m> on|off` if needed).
   const meta = entry.models.find((model) => model.id === modelId)
     || hydrateModel(REGISTRY[providerId] || { protocol: 'openai' }, config?.providers?.[providerId], { id: modelId });
   return {
@@ -397,11 +406,13 @@ export function resolveModel(config, routedId) {
 // Vision models that are cheap enough to read screenshots all day.
 const CHEAP_TIER = /flash|haiku|mini|turbo|small|lite/i;
 
-export function autoVisionEngine(config) {
+export async function autoVisionEngine(config, visionOpts = {}) {
+  const ids = catalog(config).map((m) => m.id);
+  const native = await batchVisionSupport(config, ids, visionOpts);
   const candidates = [];
-  for (const item of catalog(config)) {
-    if (!item.vision) continue;
-    const route = resolveModel(config, item.id);
+  for (const id of ids) {
+    if (!native.get(id)) continue;
+    const route = resolveModel(config, id);
     if (route) candidates.push(route);
   }
   candidates.sort((a, b) => Number(!CHEAP_TIER.test(a.modelId)) - Number(!CHEAP_TIER.test(b.modelId)));
@@ -415,6 +426,35 @@ export function autoVisionEngine(config) {
         label: `${first.provider.id}/${first.modelId}`,
       }
     : null;
+}
+
+// Pin wins; otherwise ask the public catalogs (unknown => false => bridge).
+export async function isVisionCapable(config, routedId, visionOpts = {}) {
+  const route = resolveModel(config, routedId);
+  if (!route) return false;
+  if (route.meta.visionPin !== undefined) return route.meta.visionPin;
+  const hit = await resolveVisionSupport(route.upstreamModel || route.modelId, visionOpts);
+  return hit === true;
+}
+
+// One catalog fetch for many ids (single-flight inside getVisionIndex).
+export async function batchVisionSupport(config, routedIds, visionOpts = {}) {
+  const out = new Map();
+  const pending = [];
+  for (const id of routedIds) {
+    const route = resolveModel(config, id);
+    if (!route) {
+      out.set(id, false);
+      continue;
+    }
+    if (route.meta.visionPin !== undefined) out.set(id, route.meta.visionPin);
+    else pending.push({ id, key: route.upstreamModel || route.modelId });
+  }
+  if (pending.length) {
+    const index = await getVisionIndex(visionOpts).catch(() => new Map());
+    for (const { id, key } of pending) out.set(id, lookupVision(index, key) === true);
+  }
+  return out;
 }
 
 export function probeHeaders(entry, key) {

@@ -1,6 +1,21 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRouter } from '../src/server.js';
+
+// Hermetic tests: loopback reaches the mock upstream, anything external
+// (e.g. the vision capability catalogs) fails fast instead of hitting network.
+export function loopbackFetch(url, opts) {
+  try {
+    const h = new URL(String(url)).hostname;
+    if (h === '127.0.0.1' || h === 'localhost' || h === '::1') return fetch(url, opts);
+  } catch {
+    /* fall through to reject */
+  }
+  return Promise.reject(new Error(`external fetch blocked in tests: ${url}`));
+}
 
 // Shared test rig: mock upstream + router, both on loopback ephemeral ports.
 export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {}) {
@@ -103,7 +118,12 @@ export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {})
     ...configOverrides,
   };
 
-  const server = createRouter({ config, log: () => {} });
+  const server = createRouter({
+    config,
+    log: () => {},
+    fetchImpl: loopbackFetch,
+    visionOpts: { cachePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-test-')), 'vision.json') },
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const auth = { authorization: `Bearer ${config.localKey}`, 'content-type': 'application/json' };

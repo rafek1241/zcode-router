@@ -1,5 +1,8 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRouter } from './server.js';
 
 // In-process mock upstream: proves the whole pipeline (auth, routing,
@@ -115,7 +118,22 @@ export async function runSelftest(log = console.log) {
     visionBridge: { enabled: true, engine: 'auto', local: null },
   };
 
-  const server = createRouter({ config, log: () => {} });
+  // Selftest stays offline: the mock pins vision explicitly, and any dynamic
+  // capability lookup fails fast instead of hitting the network.
+  const offlineFetch = (url, opts) => {
+    try {
+      if (new URL(String(url)).hostname === '127.0.0.1') return fetch(url, opts);
+    } catch {
+      /* fall through to reject */
+    }
+    return Promise.reject(new Error(`external fetch blocked in selftest: ${url}`));
+  };
+  const server = createRouter({
+    config,
+    log: () => {},
+    fetchImpl: offlineFetch,
+    visionOpts: { cachePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-selftest-')), 'vision.json') },
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
   const base = `http://127.0.0.1:${port}`;

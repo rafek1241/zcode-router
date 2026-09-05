@@ -41,7 +41,7 @@ export async function refreshCatalog(config, providerId, { fetchImpl = fetch, pr
   const protocol = REGISTRY[providerId]?.protocol || 'openai';
   for (const id of novel) {
     if (!pickedSet.has(id)) continue;
-    extra.push({ id, vision: false, protocol });
+    extra.push({ id, protocol }); // no vision flag: support resolves dynamically
     extraIds.add(id);
     added.push(id);
   }

@@ -26,7 +26,7 @@ test('refresh merges live ids into extra without duplicating the registry', asyn
     const result = await refreshCatalog(cfg, 'groq', { fetchImpl: fetch });
     assert.deepEqual(result.added.sort(), ['deepseek-v4-flash', 'llama-3.3-70b']);
     assert.equal(cfg.providers.groq.extra.length, 2);
-    assert.equal(cfg.providers.groq.extra.every((m) => m.vision === false), true);
+    assert.equal(cfg.providers.groq.extra.every((m) => m.vision === undefined), true, 'no vision flag: support resolves dynamically');
   });
 });
 

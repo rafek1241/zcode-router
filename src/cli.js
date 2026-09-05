@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile, isNpxCachePath } from './config.js';
-import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, setupEntries, applyProviderSelection } from './providers.js';
+import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, setupEntries, applyProviderSelection, batchVisionSupport } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
 import { patchZcodeConfig } from './zcode-config.js';
@@ -76,7 +76,7 @@ Providers & models:
   providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]
   providers remove-custom <id>
   models                         List the catalog zCode will see
-  models vision <p/m> on|off     Override a model's image support flag (passthrough ids too)
+  models vision <p/m> on|off|auto  Pin image support (auto = follow public catalogs)
   models add <p/m> [--vision] [--protocol messages]
                                  List a model that is not in the registry (new upstream
                                  models route through enabled providers anyway)
@@ -147,7 +147,9 @@ async function cmdSetup() {
     }
     rl = createInterface({ input: process.stdin, output: process.stdout });
     ask = makeAsk();
-    const candidates = catalog(cfg).filter((m) => m.vision).map((m) => ({ id: m.id, label: m.id }));
+    const enabledModels = catalog(cfg);
+    const setupNative = await batchVisionSupport(cfg, enabledModels.map((m) => m.id));
+    const candidates = enabledModels.filter((m) => setupNative.get(m.id)).map((m) => ({ id: m.id, label: m.id }));
     log(`\n${renderVisionChoices({ candidates })}`);
     let vision = visionSetupChoice(await ask('Choice [1]: '), { candidates });
     while (vision.error) {
@@ -276,9 +278,11 @@ async function cmdStart(args) {
   log(`zcode-router ${VERSION} listening on ${where}${verbose ? ' [verbose]' : ''}`);
   printZCodeBlock(cfg);
   log('\nModels served (copy-paste into zCode if the list does not auto-load):');
-  const engine = resolveVisionEngine(cfg);
-  for (const m of catalog(cfg)) {
-    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+  const engine = await resolveVisionEngine(cfg);
+  const startItems = catalog(cfg);
+  const startNative = await batchVisionSupport(cfg, startItems.map((m) => m.id));
+  for (const m of startItems) {
+    const tag = startNative.get(m.id) ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
     log(`  ${m.id}  ${tag}`);
   }
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
@@ -560,8 +564,8 @@ async function cmdModels(rest) {
   if (sub === 'vision') {
     if (!cfg) return noConfig();
     const parsed = splitModelId(target);
-    if (!parsed || !['on', 'off'].includes(value)) {
-      err('Usage: models vision <provider/model> on|off');
+    if (!parsed || !['on', 'off', 'auto'].includes(value)) {
+      err('Usage: models vision <provider/model> on|off|auto');
       process.exitCode = 1;
       return;
     }
@@ -569,10 +573,18 @@ async function cmdModels(rest) {
     const entry = providerEntry(cfg, pid);
     if (!entry) return unknownProvider(pid);
     cfg.providers[pid] = cfg.providers[pid] || {};
-    cfg.providers[pid].overrides = {
-      ...(cfg.providers[pid].overrides || {}),
-      [mid]: { ...(cfg.providers[pid].overrides?.[mid] || {}), vision: value === 'on' },
-    };
+    const overrides = { ...(cfg.providers[pid].overrides || {}) };
+    if (value === 'auto') {
+      if (overrides[mid]) delete overrides[mid].vision;
+      if (overrides[mid] && Object.keys(overrides[mid]).length === 0) delete overrides[mid];
+      if (Object.keys(overrides).length === 0) delete cfg.providers[pid].overrides;
+      else cfg.providers[pid].overrides = overrides;
+    } else {
+      cfg.providers[pid].overrides = {
+        ...overrides,
+        [mid]: { ...(overrides[mid] || {}), vision: value === 'on' },
+      };
+    }
     saveConfig(cfg);
     log(`${target}: vision ${value}.`);
     return;
@@ -661,9 +673,10 @@ async function cmdModels(rest) {
     log('(no routable models — run `zcode-router setup`)');
     return;
   }
-  const engine = resolveVisionEngine(cfg);
+  const engine = await resolveVisionEngine(cfg);
+  const listNative = await batchVisionSupport(cfg, items.map((m) => m.id));
   for (const m of items) {
-    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+    const tag = listNative.get(m.id) ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
     log(`${m.id}  ${tag}`);
   }
 }
@@ -681,14 +694,14 @@ function splitModelId(target) {
 
 // ---------- vision-bridge ----------
 
-function cmdVisionBridge(rest) {
+async function cmdVisionBridge(rest) {
   const cfg = loadConfig();
   if (!cfg) return noConfig();
   cfg.visionBridge = cfg.visionBridge || { enabled: true, engine: 'auto', local: null };
   const [sub, ...tail] = rest;
 
   if (!sub || sub === 'status') {
-    const engine = resolveVisionEngine(cfg);
+    const engine = await resolveVisionEngine(cfg);
     log(`vision bridge: ${cfg.visionBridge.enabled === false ? 'OFF' : 'on'}`);
     log(`engine: ${engine ? engine.label : 'none available'}`);
     if (cfg.visionBridge.local) log(`local: ${cfg.visionBridge.local.model} @ ${cfg.visionBridge.local.baseURL}`);

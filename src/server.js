@@ -1,7 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { catalog, resolveModel, autoVisionEngine, assertSafeBaseURL, probeHeaders } from './providers.js';
+import { catalog, resolveModel, autoVisionEngine, batchVisionSupport, isVisionCapable, assertSafeBaseURL, probeHeaders } from './providers.js';
 import { bindHost } from './config.js';
 import { VisionCache, bodyHasImage, bridgeImages, bridgeFiles, contentShape } from './vision.js';
 import { headerSummary, summarizeBody, looksLikeOmittedImage } from './debug.js';
@@ -73,7 +73,7 @@ function readBody(req, limit = MAX_BODY_BYTES) {
   });
 }
 
-export function resolveVisionEngine(config) {
+export async function resolveVisionEngine(config, opts = {}) {
   const vb = config.visionBridge;
   if (!vb || vb.enabled === false) return null;
   if (vb.engine === 'local') {
@@ -90,11 +90,12 @@ export function resolveVisionEngine(config) {
     if (!route) return null;
     return { baseURL: route.baseURL, key: route.key, model: route.upstreamModel, protocol: route.meta.protocol, label: vb.engine };
   }
-  return autoVisionEngine(config);
+  return autoVisionEngine(config, opts);
 }
 
-export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbose = false }) {
+export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbose = false, visionOpts = {} }) {
   const visionCache = new VisionCache();
+  const vopts = { fetchImpl, ...visionOpts };
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -119,9 +120,11 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
         // attachments on modalities.input / supportsImages — without those it
         // treats the model as text-only, drops the image from the API request,
         // and the agent tries local OCR instead of the vision bridge.
-        const engine = resolveVisionEngine(config);
-        const data = catalog(config).map((m) => {
-          const images = m.vision || Boolean(engine);
+        const engine = await resolveVisionEngine(config, vopts);
+        const items = catalog(config);
+        const native = await batchVisionSupport(config, items.map((m) => m.id), vopts);
+        const data = items.map((m) => {
+          const images = native.get(m.id) || Boolean(engine);
           return {
             id: m.id,
             object: 'model',
@@ -204,35 +207,40 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
       log(`vision-bridge: zCode omitted-image reminder in request but no image part detected (shape ${shape}) — will try cache-path extraction`);
     }
 
-    if (!route.meta.vision && (hasImage || omitted)) {
-      const engine = resolveVisionEngine(config);
+    // Image support resolves dynamically (pins win, unknown => bridge). The
+    // lookup only runs when images are actually present — text requests never
+    // touch the network for this.
+    const vision = (hasImage || omitted) ? await isVisionCapable(config, requestedModel, vopts) : false;
+    if (!vision && (hasImage || omitted)) {
+      const engine = await resolveVisionEngine(config, vopts);
       if (engine) {
-        if (verbose) log(`vision-bridge: running engine=${engine.label} protocol=${engine.protocol} nativeVision=${route.meta.vision}`);
+        if (verbose) log(`vision-bridge: running engine=${engine.label} protocol=${engine.protocol} nativeVision=${vision}`);
         await bridgeImages(body, engine, visionCache, { fetchImpl, log, verbose });
       } else {
         log(`vision-bridge: images/omitted-hint present but no engine (shape ${shape})`);
       }
     } else if (verbose) {
-      log(`vision-bridge: skipped nativeVision=${route.meta.vision} hasImage=${hasImage} omittedHint=${omitted}`);
+      log(`vision-bridge: skipped nativeVision=${vision} hasImage=${hasImage} omittedHint=${omitted}`);
     }
     await bridgeFiles(body, { log, cache: visionCache });
 
-    const upstreamBody = { ...body, model: route.upstreamModel };
+    let upstreamBody = { ...body, model: route.upstreamModel };
     const messagesUpstream = route.meta.protocol === 'messages';
     const timeoutMs = Number(process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS);
     const ms = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 120_000;
+    const postUpstream = (payload) => fetchImpl(`${route.baseURL}/${messagesUpstream ? 'messages' : 'chat/completions'}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: payload.stream ? 'text/event-stream' : 'application/json',
+        ...probeHeaders(route.meta, route.key),
+      },
+      body: JSON.stringify(messagesUpstream ? openaiToAnthropicRequest(payload) : payload),
+      signal: !payload.stream && ms > 0 ? AbortSignal.timeout(ms) : undefined,
+    });
     let upstream;
     try {
-      upstream = await fetchImpl(`${route.baseURL}/${messagesUpstream ? 'messages' : 'chat/completions'}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: body.stream ? 'text/event-stream' : 'application/json',
-          ...probeHeaders(route.meta, route.key),
-        },
-        body: JSON.stringify(messagesUpstream ? openaiToAnthropicRequest(upstreamBody) : upstreamBody),
-        signal: !body.stream && ms > 0 ? AbortSignal.timeout(ms) : undefined,
-      });
+      upstream = await postUpstream(upstreamBody);
     } catch (err) {
       recordLastError({
         providerId: route.provider.id,
@@ -243,6 +251,27 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
       });
       (anthropic ? anthropicError : openaiError)(res, 502, `Upstream ${route.provider.id} unreachable: ${err.message}`);
       return;
+    }
+
+    // Self-healing for a wrong vision flag: the model was sent images natively
+    // but refuses them — bridge once and resend. Streams are excluded: their
+    // error arrives after response headers are already committed.
+    if (!upstream.ok && vision && hasImage && !body.stream && (upstream.status === 400 || upstream.status === 422)) {
+      const peek = await upstream.clone().text().catch(() => '');
+      if (/\b(image|vision|multimodal)\b/i.test(peek)) {
+        const engine = await resolveVisionEngine(config, vopts);
+        if (engine) {
+          log(`vision-bridge: ${requestedModel} rejected native images, retrying via ${engine.label}`);
+          await bridgeImages(body, engine, visionCache, { fetchImpl, log, verbose });
+          upstreamBody = { ...body, model: route.upstreamModel };
+          try {
+            upstream = await postUpstream(upstreamBody);
+          } catch (err) {
+            (anthropic ? anthropicError : openaiError)(res, 502, `Upstream ${route.provider.id} unreachable: ${err.message}`);
+            return;
+          }
+        }
+      }
     }
 
     log(`${body.stream ? 'stream' : 'once'} ${anthropic ? 'messages' : 'chat'} ${requestedModel} -> ${route.provider.id}/${route.modelId} [${upstream.status}] ${shape}${omitted ? ' omitted-hint' : ''}${hasImage ? ' has-image' : ''}`);
