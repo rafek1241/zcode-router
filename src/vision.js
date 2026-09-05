@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openaiToAnthropicRequest } from './anthropic.js';
+import { openaiToResponsesRequest } from './responses.js';
 import { probeHeaders } from './providers.js';
 
 // Evidence-contract prompt: the text-only model downstream receives facts,
@@ -309,25 +310,33 @@ async function describeImage(engine, imageUrl, fetchImpl, log, verbose) {
       },
     ],
   };
-  const messagesProtocol = engine.protocol === 'messages';
-  const url = `${engine.baseURL}/${messagesProtocol ? 'messages' : 'chat/completions'}`;
-  if (verbose) log(`vision-bridge: engine POST ${url} model=${engine.model} protocol=${messagesProtocol ? 'messages' : 'openai'}`);
+  const wire = engine.protocol === 'messages' ? 'messages' : engine.protocol === 'responses' ? 'responses' : 'openai';
+  const url = `${engine.baseURL}/${wire === 'messages' ? 'messages' : wire === 'responses' ? 'responses' : 'chat/completions'}`;
+  if (verbose) log(`vision-bridge: engine POST ${url} model=${engine.model} protocol=${wire}`);
   const resp = await fetchImpl(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...probeHeaders({ protocol: engine.protocol }, engine.key),
+      ...probeHeaders({ protocol: wire }, engine.key),
     },
-    body: JSON.stringify(messagesProtocol ? openaiToAnthropicRequest(openaiBody) : openaiBody),
+    body: JSON.stringify(wire === 'messages' ? openaiToAnthropicRequest(openaiBody) : wire === 'responses' ? openaiToResponsesRequest(openaiBody) : openaiBody),
   });
   if (!resp.ok) {
     const detail = (await resp.text().catch(() => '')).slice(0, 300);
     throw new Error(`vision engine ${engine.label || engine.model} answered HTTP ${resp.status}: ${detail}`);
   }
   const data = await resp.json();
-  const text = messagesProtocol
-    ? (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n')
-    : data?.choices?.[0]?.message?.content;
+  const text =
+    wire === 'messages'
+      ? (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n')
+      : wire === 'responses'
+        ? (data?.output || [])
+            .filter((o) => o.type === 'message')
+            .flatMap((o) => o.content || [])
+            .filter((c) => c.type === 'output_text')
+            .map((c) => c.text)
+            .join('\n') || data?.output_text
+        : data?.choices?.[0]?.message?.content;
   if (!text) throw new Error(`vision engine ${engine.label || engine.model} returned an empty reading`);
   const out = typeof text === 'string' ? text : JSON.stringify(text);
   if (verbose) log(`vision-bridge: engine HTTP ${resp.status} reply ${out.length} chars: ${out.slice(0, 400)}`);

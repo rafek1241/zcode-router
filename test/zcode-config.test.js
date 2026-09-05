@@ -119,10 +119,10 @@ test('patchZcodeConfig pre-fills the router provider with all catalog models', (
 
   const result = patchZcodeConfig({ port: 4279, localKey: 'loopback-key', config: routerConfig(), configPath });
   assert.equal(result.ok, true);
-  assert.equal(result.filled, 6); // 7 opencode-go wire-exception models, one already present
+  assert.equal(result.filled, 8); // 9 opencode-go wire-exception models, one already present
   const after = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const models = after.provider['dac84aac-3e8d-4992-9cb6-7c571da9aa47'].models;
-  assert.equal(Object.keys(models).length, 7);
+  assert.equal(Object.keys(models).length, 9);
   // Existing record untouched — user tweaks (limit) survive.
   assert.deepEqual(models['opencode-go/minimax-m3'].limit, { context: 1000000 });
   assert.equal(models['opencode-go/qwen3.8-max'].supportsImages, true);
@@ -137,9 +137,9 @@ test('patchZcodeConfig seeds models when registering a router provider', () => {
   const result = patchZcodeConfig({ port: 4279, localKey: 'loopback-key', config: routerConfig(), configPath });
   assert.equal(result.ok, true);
   assert.equal(result.registered, 1);
-  assert.equal(result.filled, 7);
+  assert.equal(result.filled, 9);
   const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const entry = Object.values(data.provider).find((p) => p.name === 'zcode-router');
   assert.ok(entry, 'inserted a named zcode-router provider');
-  assert.equal(Object.keys(entry.models).length, 7);
+  assert.equal(Object.keys(entry.models).length, 9);
 });
