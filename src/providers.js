@@ -15,7 +15,7 @@
 // arrive via `models refresh` (live /models, auto-run by setup once keys
 // exist) or plain passthrough (`provider/any-id` just routes). This keeps the
 // list from rotting every time an upstream ships a model.
-import { getVisionIndex, lookupVision, resolveVisionSupport } from './vision-capabilities.js';
+import { getVisionIndex, lookupVision } from './vision-capabilities.js';
 
 const m = (id, extra = {}) => ({ id, protocol: 'openai', ...extra });
 
@@ -380,12 +380,10 @@ const CHEAP_TIER = /flash|haiku|mini|turbo|small|lite/i;
 export async function autoVisionEngine(config, visionOpts = {}) {
   const ids = catalog(config).map((m) => m.id);
   const native = await batchVisionSupport(config, ids, visionOpts);
-  const candidates = [];
-  for (const id of ids) {
-    if (!native.get(id)) continue;
-    const route = resolveModel(config, id);
-    if (route) candidates.push(route);
-  }
+  const candidates = ids
+    .filter((id) => native.get(id))
+    .map((id) => resolveModel(config, id))
+    .filter(Boolean);
   candidates.sort((a, b) => Number(!CHEAP_TIER.test(a.modelId)) - Number(!CHEAP_TIER.test(b.modelId)));
   const first = candidates[0];
   return first
@@ -401,11 +399,7 @@ export async function autoVisionEngine(config, visionOpts = {}) {
 
 // Pin wins; otherwise ask the public catalogs (unknown => false => bridge).
 export async function isVisionCapable(config, routedId, visionOpts = {}) {
-  const route = resolveModel(config, routedId);
-  if (!route) return false;
-  if (route.meta.visionPin !== undefined) return route.meta.visionPin;
-  const hit = await resolveVisionSupport(route.upstreamModel || route.modelId, visionOpts);
-  return hit === true;
+  return (await batchVisionSupport(config, [routedId], visionOpts)).get(routedId) === true;
 }
 
 // One catalog fetch for many ids (single-flight inside getVisionIndex).
@@ -422,7 +416,7 @@ export async function batchVisionSupport(config, routedIds, visionOpts = {}) {
     else pending.push({ id, key: route.upstreamModel || route.modelId });
   }
   if (pending.length) {
-    const index = await getVisionIndex(visionOpts).catch(() => new Map());
+    const index = await getVisionIndex(visionOpts);
     for (const { id, key } of pending) out.set(id, lookupVision(index, key) === true);
   }
   return out;

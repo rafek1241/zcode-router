@@ -1,24 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import {
   visionKey,
   indexModelsDev,
   indexOpenRouter,
   lookupVision,
-  resolveVisionSupport,
   getVisionIndex,
   clearVisionCapabilitiesCache,
   visionSourcesStatus,
   MODELS_DEV_URL,
   OPENROUTER_URL,
 } from '../src/vision-capabilities.js';
-
-function tempCache() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-vcap-')), 'vision.json');
-}
+import { tempVisionCache } from './helpers.js';
 
 function stubFetch({ modelsDev, openRouter, calls = {} } = {}) {
   clearVisionCapabilitiesCache();
@@ -80,33 +73,33 @@ test('indexModelsDev: majority beats a single stale flag', () => {
   assert.equal(lookupVision(index, 'kimi-k2.7-code'), true, '2 vision votes vs 1 text-only');
 });
 
-test('resolveVisionSupport reads models.dev, caches in memory', async () => {
+test('getVisionIndex single-flights and skips OpenRouter when models.dev answers', async () => {
   const calls = {};
-  const opts = { fetchImpl: stubFetch({ modelsDev: MD, calls }), cachePath: tempCache() };
-  assert.equal(await resolveVisionSupport('opencode-go/omen-alpha', opts), true);
-  assert.equal(await resolveVisionSupport('opencode-go/omen-alpha', opts), true);
+  const opts = { fetchImpl: stubFetch({ modelsDev: MD, calls }), cachePath: tempVisionCache() };
+  assert.equal(lookupVision(await getVisionIndex(opts), 'opencode-go/omen-alpha'), true);
+  assert.equal(lookupVision(await getVisionIndex(opts), 'opencode-go/omen-alpha'), true);
   assert.equal(calls[MODELS_DEV_URL], 1, 'single flight');
   assert.equal(calls[OPENROUTER_URL] || 0, 0, 'no fallback when models.dev answers');
 });
 
-test('resolveVisionSupport falls back to OpenRouter when models.dev fails', async () => {
+test('getVisionIndex falls back to OpenRouter when models.dev fails', async () => {
   const opts = {
     fetchImpl: stubFetch({
       modelsDev: new Error('down'),
       openRouter: { data: [{ id: 'moonshotai/kimi-k3', architecture: { input_modalities: ['text', 'image'] } }] },
     }),
-    cachePath: tempCache(),
+    cachePath: tempVisionCache(),
   };
-  assert.equal(await resolveVisionSupport('opencode-go/kimi-k3', opts), true);
+  assert.equal(lookupVision(await getVisionIndex(opts), 'opencode-go/kimi-k3'), true);
 });
 
-test('resolveVisionSupport returns null when every source fails', async () => {
-  const opts = { fetchImpl: stubFetch({ modelsDev: new Error('x'), openRouter: new Error('y') }), cachePath: tempCache() };
-  assert.equal(await resolveVisionSupport('opencode-go/kimi-k3', opts), null);
+test('getVisionIndex returns an empty index when every source fails', async () => {
+  const opts = { fetchImpl: stubFetch({ modelsDev: new Error('x'), openRouter: new Error('y') }), cachePath: tempVisionCache() };
+  assert.equal(lookupVision(await getVisionIndex(opts), 'opencode-go/kimi-k3'), null, 'unknown is not text-only');
 });
 
 test('getVisionIndex reuses the disk cache without fetching', async () => {
-  const cachePath = tempCache();
+  const cachePath = tempVisionCache();
   const calls = {};
   await getVisionIndex({ fetchImpl: stubFetch({ modelsDev: MD, calls }), cachePath });
   assert.equal(calls[MODELS_DEV_URL], 1);
@@ -119,8 +112,8 @@ test('getVisionIndex reuses the disk cache without fetching', async () => {
 });
 
 test('upstream id quirks still match (claude-opus-4-8)', async () => {
-  const opts = { fetchImpl: stubFetch({ modelsDev: MD }), cachePath: tempCache() };
-  assert.equal(await resolveVisionSupport('claude-opus-4-8', opts), true);
+  const opts = { fetchImpl: stubFetch({ modelsDev: MD }), cachePath: tempVisionCache() };
+  assert.equal(lookupVision(await getVisionIndex(opts), 'claude-opus-4-8'), true);
 });
 
 test('indexOpenRouter reads input_modalities', () => {
@@ -135,6 +128,6 @@ test('indexOpenRouter reads input_modalities', () => {
 });
 
 test('visionSourcesStatus reports missing cache', () => {
-  const st = visionSourcesStatus(tempCache());
+  const st = visionSourcesStatus(tempVisionCache());
   assert.equal(st.ageMs, null);
 });

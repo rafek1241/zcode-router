@@ -5,6 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRouter } from './server.js';
 
+// Loopback reaches mock upstreams; anything external (e.g. the vision
+// capability catalogs) fails fast instead of hitting the network. Shared with
+// the test rig.
+export function loopbackFetch(url, opts) {
+  try {
+    const h = new URL(String(url)).hostname;
+    if (h === '127.0.0.1' || h === 'localhost' || h === '::1') return fetch(url, opts);
+  } catch {
+    /* fall through to reject */
+  }
+  return Promise.reject(new Error(`external fetch blocked: ${url}`));
+}
+
 // In-process mock upstream: proves the whole pipeline (auth, routing,
 // streaming, tool calls, vision bridge) without touching a real provider
 // or spending a cent. Bound to 127.0.0.1 on an ephemeral port.
@@ -118,20 +131,10 @@ export async function runSelftest(log = console.log) {
     visionBridge: { enabled: true, engine: 'auto', local: null },
   };
 
-  // Selftest stays offline: the mock pins vision explicitly, and any dynamic
-  // capability lookup fails fast instead of hitting the network.
-  const offlineFetch = (url, opts) => {
-    try {
-      if (new URL(String(url)).hostname === '127.0.0.1') return fetch(url, opts);
-    } catch {
-      /* fall through to reject */
-    }
-    return Promise.reject(new Error(`external fetch blocked in selftest: ${url}`));
-  };
   const server = createRouter({
     config,
     log: () => {},
-    fetchImpl: offlineFetch,
+    fetchImpl: loopbackFetch,
     visionOpts: { cachePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-selftest-')), 'vision.json') },
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));

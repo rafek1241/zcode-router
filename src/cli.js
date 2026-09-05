@@ -149,7 +149,7 @@ async function cmdSetup() {
       if (!entry?.enabled || isLoopback(entry.baseURL)) continue;
       if (!resolveKey(entry, cfg).key) continue;
       try {
-        const result = await refreshCatalog(cfg, id, { select: async (novel) => novel });
+        const result = await refreshCatalog(cfg, id);
         if (result.added.length) log(`  ${id}: picked up ${result.added.length} model(s): ${result.added.join(', ')}`);
       } catch (e) {
         log(`  ${id}: live model list unavailable (${e.message}) — type ids manually or run \`models refresh\` later.`);
@@ -616,7 +616,7 @@ async function cmdModels(rest) {
     if (!entry) return unknownProvider(target);
     cfg.providers[pid] = cfg.providers[pid] || {};
     if (sub === 'add') {
-      const spec = { id: mid, vision: rest.includes('--vision'), protocol: flag(rest, '--protocol') === 'messages' ? 'messages' : 'openai' };
+      const spec = { id: mid, protocol: flag(rest, '--protocol') === 'messages' ? 'messages' : 'openai', ...(rest.includes('--vision') ? { vision: true } : {}) };
       const extra = cfg.providers[pid].extra || [];
       const existing = extra.findIndex((m) => (typeof m === 'string' ? m : m.id) === mid);
       if (existing === -1) extra.push(spec);

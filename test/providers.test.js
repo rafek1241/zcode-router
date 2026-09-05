@@ -1,17 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { REGISTRY, providerEntry, resolveModel, resolveKey, catalog, autoVisionEngine, isVisionCapable, assertSafeBaseURL } from '../src/providers.js';
 import { clearVisionCapabilitiesCache } from '../src/vision-capabilities.js';
+import { tempVisionCache } from './helpers.js';
 
 function cfgWith(providers) {
   return { localKey: 'k', port: 1, providers, visionBridge: { enabled: true, engine: 'auto', local: null } };
-}
-
-function tempCache() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-prov-')), 'vision.json');
 }
 
 // Stub for https://models.dev/api.json — fresh fetchImpl per test defeats the
@@ -77,14 +71,14 @@ test('auto vision engine prefers cheap tiers and needs vision+key', async () => 
   const fetchImpl = stubSources(null, {
     'opencode-go': { models: { 'minimax-m3': { modalities: { input: ['text', 'image'] } } } },
   });
-  const engine = await autoVisionEngine(cfg, { fetchImpl, cachePath: tempCache() });
+  const engine = await autoVisionEngine(cfg, { fetchImpl, cachePath: tempVisionCache() });
   assert.equal(engine.label, 'opencode-go/minimax-m3', 'cheapest vision-flagged opencode-go model');
 });
 
 test('auto vision engine returns null with no vision models', async () => {
   const cfg = cfgWith({ deepseek: { enabled: true, key: 'sk' } });
   const fetchImpl = stubSources(null, { deepseek: { models: { 'deepseek-v4-flash': { modalities: { input: ['text'] } } } } });
-  assert.equal(await autoVisionEngine(cfg, { fetchImpl, cachePath: tempCache() }), null);
+  assert.equal(await autoVisionEngine(cfg, { fetchImpl, cachePath: tempVisionCache() }), null);
 });
 
 test('unknown model ids passthrough an enabled provider', () => {
@@ -168,7 +162,7 @@ test('kimi-k3 and qwen max on opencode-go are vision-capable', async () => {
     moonshotai: { models: { 'kimi-k3': { modalities: { input: ['text', 'image', 'video'] } } } },
     qwen: { models: { 'qwen3.8-max': { modalities: { input: ['text', 'image', 'video'] } } } },
   });
-  const vo = { fetchImpl, cachePath: tempCache() };
+  const vo = { fetchImpl, cachePath: tempVisionCache() };
   assert.equal(await isVisionCapable(cfg, 'opencode-go/kimi-k3', vo), true);
   assert.equal(await isVisionCapable(cfg, 'opencode-go/qwen3.8-max', vo), true);
   assert.equal(await isVisionCapable(cfg, 'opencode-go/deepseek-v4-flash', vo), false, 'unknown to catalogs stays text-only');
@@ -185,7 +179,7 @@ test('vision pin beats the dynamic lookup both ways', async () => {
   const fetchImpl = stubSources(null, {
     moonshotai: { models: { 'kimi-k3': { modalities: { input: ['text', 'image'] } } } },
   });
-  const vo = { fetchImpl, cachePath: tempCache() };
+  const vo = { fetchImpl, cachePath: tempVisionCache() };
   assert.equal(await isVisionCapable(cfg, 'opencode-go/kimi-k3', vo), false, 'off pin wins over catalog vision');
   assert.equal(await isVisionCapable(cfg, 'opencode-go/deepseek-v4-flash', vo), true, 'on pin wins over catalog miss');
 });

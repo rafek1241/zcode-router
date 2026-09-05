@@ -8,11 +8,11 @@ import { homeDir } from './config.js';
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 export const OPENROUTER_URL = 'https://openrouter.ai/api/v1/models';
-export const VISION_CACHE_TTL_MS = 24 * 3600 * 1000;
+const VISION_CACHE_TTL_MS = 24 * 3600 * 1000;
 const FAIL_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
 
-export function visionCachePath() {
+function visionCachePath() {
   return path.join(homeDir(), 'vision-sources-cache.json');
 }
 
@@ -34,8 +34,8 @@ function hasImage(modalities) {
 
 // One pass over a catalog accumulates votes per model: an `opencode-go/*`
 // entry (the ids this router actually serves) beats a majority vote, which
-// beats first-seen order. // ponytail: majority over first-seen, one provider
-// ships stale flags and JSON order is arbitrary.
+// beats first-seen order (one provider ships stale flags; JSON order is
+// arbitrary).
 function vote(votes, full, short, vision, authoritative) {
   for (const key of [full, short]) {
     if (!key) continue;
@@ -111,7 +111,8 @@ export function clearVisionCapabilitiesCache() {
   mem = null;
 }
 
-export async function getVisionIndex({ fetchImpl = fetch, cachePath = visionCachePath(), now = Date.now() } = {}) {
+export async function getVisionIndex({ fetchImpl = fetch, cachePath = visionCachePath() } = {}) {
+  const now = Date.now();
   if (mem && mem.fetchImpl === fetchImpl && now - mem.at < mem.ttl) return mem.index;
   const disk = readDiskCache(cachePath);
   if (disk && now - disk.fetchedAt < VISION_CACHE_TTL_MS) {
@@ -144,16 +145,6 @@ export function lookupVision(index, id) {
   const short = shortKey(id);
   if (short !== full && index.has(short)) return index.get(short);
   return null;
-}
-
-// true = native image input, false = text-only (bridge), null = unknown source
-// data (caller treats as text-only). Never throws.
-export async function resolveVisionSupport(id, opts = {}) {
-  try {
-    return lookupVision(await getVisionIndex(opts), id);
-  } catch {
-    return null;
-  }
 }
 
 // Majority votes disagree across providers (or the disk cache holds them), so
