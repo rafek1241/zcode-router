@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { refreshCatalog } from '../src/catalog-refresh.js';
+import { refreshCatalog, refreshEmptyProviders } from '../src/catalog-refresh.js';
 
 async function withModelsServer(payload, fn) {
   const server = http.createServer((_, res) => {
@@ -95,4 +95,36 @@ test('refresh select callback keeps only picked new ids', async () => {
     assert.deepEqual(result.added, ['b']);
     assert.deepEqual(cfg.providers.groq.extra.map((m) => m.id), ['b']);
   });
+});
+
+test('refreshEmptyProviders fills empty registry providers, skips the rest', async () => {
+  await withModelsServer({ data: [{ id: 'deepseek-v4-flash' }, { id: 'deepseek-v4-pro' }] }, async (port) => {
+    const cfg = {
+      providers: {
+        // enabled + key + no models (the upgrade case): refreshed
+        deepseek: { enabled: true, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1` },
+        // already has models: untouched
+        groq: { enabled: true, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1`, extra: [{ id: 'kept', protocol: 'openai' }] },
+        // custom provider: user-managed, untouched
+        'my-relay': { enabled: true, label: 'mine', baseURL: `http://127.0.0.1:${port}/v1` },
+        // enabled but keyless and not loopback: skipped without fetching
+        'kimi-api': { enabled: true, baseURL: 'https://api.moonshot.ai/v1' },
+        // disabled: skipped
+        'grok-api': { enabled: false, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1` },
+      },
+    };
+    const refreshed = await refreshEmptyProviders(cfg, { fetchImpl: fetch });
+    assert.deepEqual(refreshed, ['deepseek']);
+    assert.deepEqual(cfg.providers.deepseek.extra.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro']);
+    assert.deepEqual(cfg.providers.groq.extra.map((m) => m.id), ['kept']);
+    assert.equal(cfg.providers['my-relay'].extra, undefined);
+    assert.equal(cfg.providers['kimi-api'].extra, undefined);
+    assert.equal(cfg.providers['grok-api'].extra, undefined);
+  });
+});
+
+test('refreshEmptyProviders stays quiet when every source is empty', async () => {
+  const cfg = { providers: { deepseek: { enabled: true, key: 'sk', baseURL: 'https://api.deepseek.invalid/v1' } } };
+  const refreshed = await refreshEmptyProviders(cfg, { fetchImpl: async () => { throw new Error('boom'); } });
+  assert.deepEqual(refreshed, []);
 });

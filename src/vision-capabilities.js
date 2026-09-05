@@ -106,19 +106,14 @@ function writeDiskCache(cachePath, index) {
 }
 
 let mem = null; // { fetchImpl, at, ttl, index } — one fetchImpl per process in practice
+let inflight = null; // { fetchImpl, cachePath, promise } — coalesces concurrent cold loads
 
 export function clearVisionCapabilitiesCache() {
   mem = null;
+  inflight = null;
 }
 
-export async function getVisionIndex({ fetchImpl = fetch, cachePath = visionCachePath() } = {}) {
-  const now = Date.now();
-  if (mem && mem.fetchImpl === fetchImpl && now - mem.at < mem.ttl) return mem.index;
-  const disk = readDiskCache(cachePath);
-  if (disk && now - disk.fetchedAt < VISION_CACHE_TTL_MS) {
-    mem = { fetchImpl, at: disk.fetchedAt, ttl: VISION_CACHE_TTL_MS, index: disk.index };
-    return disk.index;
-  }
+async function loadIndex(fetchImpl, cachePath) {
   let index = null;
   try {
     index = indexModelsDev(await fetchJson(fetchImpl, MODELS_DEV_URL));
@@ -129,13 +124,36 @@ export async function getVisionIndex({ fetchImpl = fetch, cachePath = visionCach
       index = null;
     }
   }
+  const at = Date.now();
   if (index) {
     writeDiskCache(cachePath, index);
-    mem = { fetchImpl, at: now, ttl: VISION_CACHE_TTL_MS, index };
+    mem = { fetchImpl, at, ttl: VISION_CACHE_TTL_MS, index };
     return index;
   }
-  mem = { fetchImpl, at: now, ttl: FAIL_TTL_MS, index: new Map() };
+  mem = { fetchImpl, at, ttl: FAIL_TTL_MS, index: new Map() };
   return mem.index;
+}
+
+export async function getVisionIndex({ fetchImpl = fetch, cachePath = visionCachePath() } = {}) {
+  const now = Date.now();
+  if (mem && mem.fetchImpl === fetchImpl && now - mem.at < mem.ttl) return mem.index;
+  const disk = readDiskCache(cachePath);
+  if (disk && now - disk.fetchedAt < VISION_CACHE_TTL_MS) {
+    mem = { fetchImpl, at: disk.fetchedAt, ttl: VISION_CACHE_TTL_MS, index: disk.index };
+    return disk.index;
+  }
+  // First request pays the fetch; concurrent callers await the same promise
+  // instead of each hitting models.dev (and the OpenRouter fallback).
+  if (inflight && inflight.fetchImpl === fetchImpl && inflight.cachePath === cachePath) {
+    return inflight.promise;
+  }
+  const promise = loadIndex(fetchImpl, cachePath);
+  inflight = { fetchImpl, cachePath, promise };
+  try {
+    return await promise;
+  } finally {
+    if (inflight && inflight.promise === promise) inflight = null;
+  }
 }
 
 export function lookupVision(index, id) {

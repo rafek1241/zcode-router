@@ -11,7 +11,9 @@ import { createRouter } from './server.js';
 export function loopbackFetch(url, opts) {
   try {
     const h = new URL(String(url)).hostname;
-    if (h === '127.0.0.1' || h === 'localhost' || h === '::1') return fetch(url, opts);
+    // `new URL` keeps IPv6 brackets in .hostname, so both spellings are listed
+    // (same as isLoopback in providers.js).
+    if (h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]') return fetch(url, opts);
   } catch {
     /* fall through to reject */
   }

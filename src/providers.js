@@ -12,9 +12,10 @@
 //
 // The registry lists ONLY wire-protocol exceptions: models needing a
 // non-default protocol or an upstream rename. Plain ids are NOT listed — they
-// arrive via `models refresh` (live /models, auto-run by setup once keys
-// exist) or plain passthrough (`provider/any-id` just routes). This keeps the
-// list from rotting every time an upstream ships a model.
+// arrive via `models refresh` (live /models, auto-run by setup after keys and
+// by `start` for providers that still have no models) or plain passthrough
+// (`provider/any-id` just routes). This keeps the list from rotting every
+// time an upstream ships a model.
 import { getVisionIndex, lookupVision } from './vision-capabilities.js';
 
 const m = (id, extra = {}) => ({ id, protocol: 'openai', ...extra });

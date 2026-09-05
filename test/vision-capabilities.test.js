@@ -82,6 +82,31 @@ test('getVisionIndex single-flights and skips OpenRouter when models.dev answers
   assert.equal(calls[OPENROUTER_URL] || 0, 0, 'no fallback when models.dev answers');
 });
 
+test('concurrent cold loads await one in-flight fetch', async () => {
+  clearVisionCapabilitiesCache();
+  const calls = {};
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  const gatedFetch = async (url) => {
+    const u = String(url);
+    calls[u] = (calls[u] || 0) + 1;
+    await gate;
+    if (u === MODELS_DEV_URL) return new Response(JSON.stringify(MD), { status: 200 });
+    throw new Error(`unexpected fetch in test: ${u}`);
+  };
+  const opts = { fetchImpl: gatedFetch, cachePath: tempVisionCache() };
+  const first = getVisionIndex(opts); // starts the fetch, parks on the gate
+  const second = getVisionIndex(opts); // same fetchImpl/cachePath: joins in-flight
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(calls[MODELS_DEV_URL], 1, 'one models.dev request for both callers');
+  assert.equal(calls[OPENROUTER_URL] || 0, 0, 'no fallback');
+  assert.equal(lookupVision(a, 'opencode-go/omen-alpha'), true);
+  assert.equal(lookupVision(b, 'opencode-go/omen-alpha'), true);
+});
+
 test('getVisionIndex falls back to OpenRouter when models.dev fails', async () => {
   const opts = {
     fetchImpl: stubFetch({

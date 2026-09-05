@@ -211,8 +211,8 @@ unpin) whether a model is treated as vision-capable.
 
 Image support is detected dynamically from public catalogs (models.dev first,
 OpenRouter as fallback, cached 24 h) — no hardcoded list to go stale. Unknown
-models default to text-only, and if a model sent images natively rejects them,
-the router bridges once and resends.
+models default to text-only, and if a native image send is rejected with
+HTTP 400 or 422, the router retries exactly once through the bridge.
 
 ## Security
 

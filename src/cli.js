@@ -12,7 +12,7 @@ import { describeServiceTarget, installService, serviceStatus, startService, sto
 import { dockerDown, dockerStatus, installDocker } from './docker.js';
 import { pickProviders, renderVisionChoices, visionSetupChoice } from './setup-ui.js';
 import { applyDoctorFixes, collectDoctorChecks, formatDoctorReport } from './doctor.js';
-import { refreshCatalog } from './catalog-refresh.js';
+import { refreshCatalog, refreshEmptyProviders } from './catalog-refresh.js';
 import { formatLastError, readLastError } from './last-error.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -291,6 +291,14 @@ async function cmdStart(args) {
       : `http://127.0.0.1:${cfg.port} (loopback only)`;
   log(`zcode-router ${VERSION} listening on ${where}${verbose ? ' [verbose]' : ''}`);
   printZCodeBlock(cfg);
+  // Registry presets are gone, so a provider upgraded with only a stored key
+  // serves an empty catalog until refreshed. Pull live lists in the background
+  // (same as setup does after keys); the server routes meanwhile.
+  refreshEmptyProviders(cfg, { log: (m) => err(`[router] ${m}`) })
+    .then((ids) => {
+      if (ids.length) saveConfig(cfg);
+    })
+    .catch(() => {});
   log('\nModels served (copy-paste into zCode if the list does not auto-load):');
   const engine = await resolveVisionEngine(cfg);
   const startItems = catalog(cfg);
