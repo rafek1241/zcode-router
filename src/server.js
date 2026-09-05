@@ -2,7 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { catalog, resolveModel, autoVisionEngine, batchVisionSupport, isVisionCapable, assertSafeBaseURL, probeHeaders } from './providers.js';
-import { bindHost } from './config.js';
+import { bindHost, saveConfig } from './config.js';
 import { VisionCache, bodyHasImage, bridgeImages, bridgeFiles, contentShape } from './vision.js';
 import { headerSummary, summarizeBody, looksLikeOmittedImage } from './debug.js';
 import { recordLastError } from './last-error.js';
@@ -17,6 +17,12 @@ import {
 } from './anthropic.js';
 
 const MAX_BODY_BYTES = Number(process.env.ZCODE_ROUTER_MAX_BODY_BYTES) || 64 * 1024 * 1024;
+
+// Models whose wrong-protocol probe failed: `provider/model@baseURL` -> Date.now().
+// Both protocols failing means the upstream is simply broken — remember so it
+// doesn't pay a double call on every request. After the TTL one probe retries.
+const PROTOCOL_PROBE_FAIL_TTL_MS = 3600_000;
+const protocolProbeFailures = new Map();
 
 /** Constant-time comparison so token checks don't leak timing. */
 function keyMatches(presented, expected) {
@@ -103,9 +109,10 @@ export async function resolveVisionEngine(config, opts = {}) {
 /**
  * The router: an http.Server speaking OpenAI Chat Completions and Anthropic
  * Messages on the same port — auth, model routing, protocol translation,
- * vision bridging. `fetchImpl` is injectable for tests.
+ * vision bridging. `fetchImpl` is injectable for tests, `saveImpl` replaces
+ * the config writer used when a protocol lesson is persisted.
  */
-export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbose = false, visionOpts = {} }) {
+export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbose = false, visionOpts = {}, saveImpl = saveConfig }) {
   const visionCache = new VisionCache();
   const vopts = { fetchImpl, ...visionOpts };
 
@@ -237,7 +244,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
     await bridgeFiles(body, { log, cache: visionCache });
 
     let upstreamBody = { ...body, model: route.upstreamModel };
-    const messagesUpstream = route.meta.protocol === 'messages';
+    let messagesUpstream = route.meta.protocol === 'messages';
     const timeoutMs = Number(process.env.ZCODE_ROUTER_UPSTREAM_TIMEOUT_MS);
     const ms = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 120_000;
     const postUpstream = (payload) => fetchImpl(`${route.baseURL}/${messagesUpstream ? 'messages' : 'chat/completions'}`, {
@@ -245,7 +252,9 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
       headers: {
         'content-type': 'application/json',
         accept: payload.stream ? 'text/event-stream' : 'application/json',
-        ...probeHeaders(route.meta, route.key),
+        // Auth headers match the protocol actually being POSTed, not the one
+        // the model row claims — they diverge during a protocol probe.
+        ...probeHeaders({ protocol: messagesUpstream ? 'messages' : 'openai' }, route.key),
       },
       body: JSON.stringify(messagesUpstream ? openaiToAnthropicRequest(payload) : payload),
       signal: !payload.stream && ms > 0 ? AbortSignal.timeout(ms) : undefined,
@@ -283,6 +292,47 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
             return;
           }
         }
+      }
+    }
+
+    // Protocol self-learning: a Messages-only upstream answers an OpenAI-shaped
+    // POST with a generic 500 and vice versa. Probe the other protocol once;
+    // when it answers, persist the correction as a model override so future
+    // requests go straight to the right endpoint. Streams are safe here: the
+    // probe runs before any byte reaches the client.
+    const probeKey = `${route.provider.id}/${route.modelId}@${route.baseURL}`;
+    const probedRecently = (protocolProbeFailures.get(probeKey) || 0) > Date.now() - PROTOCOL_PROBE_FAIL_TTL_MS;
+    if (!upstream.ok && upstream.status === 500 && !probedRecently) {
+      const learned = messagesUpstream ? 'openai' : 'messages';
+      log(`protocol probe: ${requestedModel} answered HTTP 500 as ${route.meta.protocol}, retrying once as ${learned}`);
+      messagesUpstream = learned === 'messages';
+      let probed = null;
+      try {
+        probed = await postUpstream(upstreamBody);
+      } catch {
+        /* unreachable on the other protocol too */
+      }
+      if (probed?.ok) {
+        await upstream.arrayBuffer().catch(() => {}); // free the abandoned attempt's socket
+        upstream = probed;
+        const slot = config.providers[route.provider.id] || (config.providers[route.provider.id] = {});
+        slot.overrides = {
+          ...(slot.overrides || {}),
+          [route.modelId]: { ...(slot.overrides?.[route.modelId] || {}), protocol: learned },
+        };
+        try {
+          saveImpl(config);
+          log(`protocol learned: ${route.provider.id}/${route.modelId} speaks ${learned} — saved to config.json`);
+        } catch {
+          /* persisting the lesson is best-effort; this request still succeeds */
+        }
+      } else {
+        // Both protocols failed: not a protocol problem. Remember it so a
+        // broken model doesn't pay a double upstream call on every request,
+        // and serve the original failure unchanged.
+        protocolProbeFailures.set(probeKey, Date.now());
+        await probed?.arrayBuffer().catch(() => {});
+        messagesUpstream = route.meta.protocol === 'messages';
       }
     }
 

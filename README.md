@@ -215,6 +215,12 @@ OpenRouter as fallback, cached 24 h) — no hardcoded list to go stale. Unknown
 models default to text-only, and if a native image send is rejected with
 HTTP 400 or 422, the router retries exactly once through the bridge.
 
+Wire protocol self-heals the same way: if an upstream answers HTTP 500 because
+the router used the wrong protocol (OpenAI vs Anthropic Messages), the router
+probes the other protocol once, serves the request, and remembers the
+correction in `config.json` — no manual pinning. If both protocols fail, the
+upstream is simply broken and the error passes through unchanged.
+
 ## Security
 
 Built to run on your own machine and face only ZCode on loopback:

@@ -67,6 +67,28 @@ test('custom providers resolve and list', () => {
   assert.deepEqual(catalog(cfg).map((m) => m.id), ['lmstudio/qwen2.5-vl-3b']);
 });
 
+test('provider-level protocol repairs stale openai extras (opencode-go 500 regression)', () => {
+  const cfg = cfgWith({
+    'opencode-go': { enabled: true, key: 'sk', extra: [{ id: 'muse-spark-1.3-contributor', protocol: 'openai' }] },
+  });
+  const route = resolveModel(cfg, 'opencode-go/muse-spark-1.3-contributor');
+  assert.equal(route.meta.protocol, 'messages', 'provider protocol beats the stale stamped default');
+  assert.equal(route.upstreamModel, 'muse-spark-1.3-contributor');
+});
+
+test('custom provider models keep their explicit protocol', () => {
+  const cfg = cfgWith({
+    'my-relay': {
+      enabled: true,
+      label: 'relay',
+      baseURL: 'http://127.0.0.1:9/v1',
+      models: [{ id: 'a', protocol: 'messages' }, { id: 'b', protocol: 'openai' }],
+    },
+  });
+  assert.equal(resolveModel(cfg, 'my-relay/a').meta.protocol, 'messages');
+  assert.equal(resolveModel(cfg, 'my-relay/b').meta.protocol, 'openai');
+});
+
 test('auto vision engine prefers cheap tiers and needs vision+key', async () => {
   const cfg = cfgWith({
     'opencode-go': { enabled: true, key: 'sk-oc' },
@@ -89,7 +111,7 @@ test('unknown model ids passthrough an enabled provider', () => {
   const route = resolveModel(cfg, 'opencode-go/brand-new-model');
   assert.equal(route.modelId, 'brand-new-model');
   assert.equal(route.meta.visionPin, undefined, 'unknown models stay dynamic, never pinned');
-  assert.equal(route.meta.protocol, 'openai');
+  assert.equal(route.meta.protocol, 'messages', 'opencode-go speaks Messages only — provider-level protocol');
   assert.equal(route.baseURL, 'https://opencode.ai/zen/go/v1');
   assert.equal(resolveModel(cfg, 'nobody/brand-new-model'), null);
   assert.equal(resolveModel(cfg, 'clinepass/brand-new-model'), null, 'provider not enabled');
