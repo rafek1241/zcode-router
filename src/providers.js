@@ -261,14 +261,13 @@ export const REGISTRY = {
 function hydrateModel(base, user, model) {
   const e = typeof model === 'string' ? { id: model } : model;
   const protocol = user?.overrides?.[e.id]?.protocol ?? e.protocol ?? base.protocol ?? 'openai';
-  const vision = user?.overrides?.[e.id]?.vision ?? e.vision ?? false;
   // Only an explicit user choice pins vision: `models vision <p/m> on|off`, or
   // `vision: true` on a user-added model (`models add --vision`, `add-custom
   // --vision`). Bare `false` is the old default, not a choice — it stays
   // dynamic so catalogs can upgrade the model later.
   const visionPin = user?.overrides?.[e.id]?.vision ?? (e.vision === true ? true : undefined);
   const upstream = e.upstream || (base.upstreamPrefix ? `${base.upstreamPrefix}${e.id}` : undefined);
-  return { id: e.id, vision, protocol, ...(upstream ? { upstream } : {}), ...(visionPin === undefined ? {} : { visionPin }) };
+  return { id: e.id, protocol, ...(upstream ? { upstream } : {}), ...(visionPin === undefined ? {} : { visionPin }) };
 }
 
 export function providerEntry(config, id) {
@@ -372,7 +371,7 @@ export function catalog(config) {
     if (!p.enabled) continue;
     if (!resolveKey(p, config).key && !isLoopback(p.baseURL)) continue;
     for (const model of p.models) {
-      out.push({ id: `${p.id}/${model.id}`, provider: p.id, vision: model.vision });
+      out.push({ id: `${p.id}/${model.id}`, provider: p.id });
     }
   }
   return out;

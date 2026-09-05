@@ -33,8 +33,8 @@ test('registry providers resolve with stored key and overrides', () => {
   const route = resolveModel(cfg, 'deepseek/deepseek-v4-flash');
   assert.equal(route.key, 'sk-test');
   assert.equal(route.baseURL, 'https://api.deepseek.com/v1');
-  assert.equal(route.meta.vision, true, 'user override wins');
-  assert.equal(resolveModel(cfg, 'deepseek/deepseek-v4-pro').meta.vision, false);
+  assert.equal(route.meta.visionPin, true, 'user override wins');
+  assert.equal(resolveModel(cfg, 'deepseek/deepseek-v4-pro').meta.visionPin, undefined, 'no pin: resolves dynamically');
 });
 
 test('disabled or keyless providers are invisible to the catalog', () => {
@@ -91,7 +91,7 @@ test('unknown model ids passthrough an enabled provider', () => {
   const cfg = cfgWith({ 'opencode-go': { enabled: true, key: 'sk-oc' } });
   const route = resolveModel(cfg, 'opencode-go/brand-new-model');
   assert.equal(route.modelId, 'brand-new-model');
-  assert.equal(route.meta.vision, false, 'conservative default for unknown models');
+  assert.equal(route.meta.visionPin, undefined, 'unknown models stay dynamic, never pinned');
   assert.equal(route.meta.protocol, 'openai');
   assert.equal(route.baseURL, 'https://opencode.ai/zen/go/v1');
   assert.equal(resolveModel(cfg, 'nobody/brand-new-model'), null);
@@ -104,7 +104,7 @@ test('models added via config extra appear in the catalog with protocol', () => 
   });
   assert.ok(catalog(cfg).map((m) => m.id).includes('opencode-go/shiny-new'));
   const route = resolveModel(cfg, 'opencode-go/shiny-new');
-  assert.equal(route.meta.vision, true);
+  assert.equal(route.meta.visionPin, true, '--vision pins native');
   assert.equal(route.meta.protocol, 'messages');
 });
 
@@ -191,7 +191,7 @@ test('passthrough models honor vision overrides without models add', () => {
   const cfg = cfgWith({
     groq: { enabled: true, key: 'sk-groq', overrides: { 'llama-3.3-70b': { vision: true } } },
   });
-  assert.equal(resolveModel(cfg, 'groq/llama-3.3-70b').meta.vision, true);
+  assert.equal(resolveModel(cfg, 'groq/llama-3.3-70b').meta.visionPin, true);
 });
 
 test('qwen-plan base URL can be overridden by env', () => {
