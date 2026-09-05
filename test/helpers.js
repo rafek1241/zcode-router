@@ -1,8 +1,21 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRouter } from '../src/server.js';
+import { loopbackFetch } from '../src/selftest.js';
 
-// Shared test rig: mock upstream + router, both on loopback ephemeral ports.
+/** Hermetic vision lookups: a fresh throwaway cache dir per call. */
+export function tempVisionCache() {
+  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-test-')), 'vision.json');
+}
+
+/**
+ * Shared test rig: mock upstream + router, both on loopback ephemeral ports.
+ * `upstreamHandler` replaces the default OpenAI/Anthropic mock; `state`
+ * records requests and vision calls for assertions.
+ */
 export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {}) {
   const state = { requests: [], visionCalls: 0, anthropicRequests: [] };
   const upstream = http.createServer(
@@ -103,7 +116,12 @@ export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {})
     ...configOverrides,
   };
 
-  const server = createRouter({ config, log: () => {} });
+  const server = createRouter({
+    config,
+    log: () => {},
+    fetchImpl: loopbackFetch,
+    visionOpts: { cachePath: tempVisionCache() },
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const auth = { authorization: `Bearer ${config.localKey}`, 'content-type': 'application/json' };
@@ -117,6 +135,7 @@ export async function makeRig(t, { configOverrides = {}, upstreamHandler } = {})
   return { state, config, base, auth, chat: (body) => fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: auth, body: JSON.stringify(body) }) };
 }
 
+/** Last user message text in OpenAI shape, for mock replies. */
 function lastText(body) {
   for (const m of [...(body.messages || [])].reverse()) {
     if (m.role !== 'user') continue;
@@ -126,6 +145,7 @@ function lastText(body) {
   return '';
 }
 
+/** Last user message text in Anthropic shape, for mock replies. */
 function anthropicLastText(body) {
   for (const m of [...(body.messages || [])].reverse()) {
     if (m.role !== 'user') continue;

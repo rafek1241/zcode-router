@@ -4,15 +4,18 @@ import path from 'node:path';
 import { configPath, DEFAULT_PORT, homeDir, loadConfig } from './config.js';
 import { catalog, isLoopback, listProviders, resolveKey, assertSafeBaseURL, probeHeaders } from './providers.js';
 import { resolveVisionEngine } from './server.js';
+import { visionSourcesStatus } from './vision-capabilities.js';
 import { dockerFilesPresent, dockerStatus } from './docker.js';
 import { describeServiceTarget, localDir, serviceStatus } from './service.js';
 import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
 import { readLastError, formatLastError } from './last-error.js';
 
+/** Append one check result row. */
 function add(checks, status, name, detail = '') {
   checks.push({ status, name, detail });
 }
 
+/** True when `port` is not bound on loopback. */
 async function portFree(port) {
   return new Promise((resolve) => {
     const probe = net.createServer();
@@ -22,6 +25,7 @@ async function portFree(port) {
   });
 }
 
+/** Gather every health check (config, keys, port, providers, vision cache, last error). */
 export async function collectDoctorChecks({
   probe = false,
   fetchImpl = fetch,
@@ -100,12 +104,19 @@ export async function collectDoctorChecks({
   if (vb?.enabled === false) {
     add(checks, 'info', 'vision bridge', 'disabled — images to text-only models will be refused by the provider');
   } else {
-    const engine = resolveVisionEngine(cfg);
+    const engine = await resolveVisionEngine(cfg);
     add(
       checks,
       'info',
       'vision bridge engine',
       engine ? engine.label : 'none available — pin one with `vision-bridge engine <provider/model>` to enable image pasting'
+    );
+    const src = visionSourcesStatus();
+    add(
+      checks,
+      'info',
+      'vision catalog cache',
+      src.ageMs === null ? 'empty — fetched on the first image request' : `age ${Math.round(src.ageMs / 3600000 * 10) / 10}h (${src.path})`
     );
   }
 
@@ -135,6 +146,7 @@ export async function collectDoctorChecks({
   return { checks, failed, config: cfg };
 }
 
+/** Render checks as tagged lines plus the copy-paste zCode setup block. */
 export function formatDoctorReport({ checks, failed, config }) {
   const tag = { ok: ' OK ', fail: 'FAIL', info: 'INFO', warn: 'WARN' };
   const lines = checks.map((c) => `${tag[c.status] || c.status}  ${c.name}${c.detail ? `  — ${c.detail}` : ''}`);
@@ -153,6 +165,7 @@ export function formatDoctorReport({ checks, failed, config }) {
   return lines.join('\n');
 }
 
+/** Safe auto-fixes: config permissions and upserting the zCode provider record. */
 export function applyDoctorFixes({ config } = {}) {
   const cfg = config || loadConfig();
   const fixed = [];

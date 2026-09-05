@@ -1,13 +1,25 @@
 // Built-in provider registry. Subscription providers (flat-rate plans) are the
-// point of this project; plain pay-per-use APIs work too. `vision: false` is
-// the conservative default — a model wrongly flagged vision-capable breaks
-// turns when the upstream rejects image parts, a model wrongly flagged
-// text-only just goes through the vision bridge.
+// point of this project; plain pay-per-use APIs work too.
+//
+// Image support is NOT stored here — it is looked up dynamically from public
+// catalogs (see vision-capabilities.js). `vision: true` on a user model means
+// an explicit pin ("send images natively"); `models vision <p/m> off` pins
+// text-only. Everything else resolves via lookup, unknown defaults to
+// text-only so the vision bridge picks it up.
 //
 // Catalog ids are `provider/id`. When upstream wants a different model string
 // (ClinePass `cline-pass/…`, Command Code `google/gemini-…`), set `upstream`.
+//
+// The registry lists ONLY wire-protocol exceptions: models needing a
+// non-default protocol or an upstream rename. Plain ids are NOT listed — they
+// arrive via `models refresh` (live /models, auto-run by setup after keys and
+// by `start` for providers that still have no models) or plain passthrough
+// (`provider/any-id` just routes). This keeps the list from rotting every
+// time an upstream ships a model.
+import { getVisionIndex, lookupVision } from './vision-capabilities.js';
 
-const m = (id, extra = {}) => ({ id, vision: false, protocol: 'openai', ...extra });
+/** Registry model row: openai protocol by default, plus per-model exceptions. */
+const m = (id, extra = {}) => ({ id, protocol: 'openai', ...extra });
 
 export const GROUP_ORDER = ['subscription', 'api', 'catalog'];
 
@@ -18,22 +30,11 @@ export const REGISTRY = {
     baseURL: 'https://opencode.ai/zen/go/v1',
     keyEnv: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
     models: [
-      m('deepseek-v4-flash'),
-      m('deepseek-v4-pro'),
-      m('glm-5.2'),
-      m('glm-5.1'),
-      m('kimi-k3', { vision: true }),
-      m('kimi-k2.7-code'),
-      m('kimi-k2.6'),
-      m('mimo-v2.5'),
-      m('mimo-v2.5-pro'),
-      m('hy3'),
-      m('grok-4.5', { vision: true }),
-      m('minimax-m3', { vision: true, protocol: 'messages' }),
+      m('minimax-m3', { protocol: 'messages' }),
       m('minimax-m2.7', { protocol: 'messages' }),
       m('minimax-m2.5', { protocol: 'messages' }),
-      m('qwen3.8-max', { vision: true, protocol: 'messages' }),
-      m('qwen3.7-max', { vision: true, protocol: 'messages' }),
+      m('qwen3.8-max', { protocol: 'messages' }),
+      m('qwen3.7-max', { protocol: 'messages' }),
       m('qwen3.7-plus', { protocol: 'messages' }),
       m('qwen3.6-plus', { protocol: 'messages' }),
     ],
@@ -53,21 +54,8 @@ export const REGISTRY = {
     baseURL: 'https://api.cline.bot/api/v1',
     keyEnv: ['CLINEPASS_API_KEY', 'CLINE_API_KEY'],
     upstreamPrefix: 'cline-pass/',
-    note: 'Requires an active ClinePass subscription.',
-    models: [
-      m('deepseek-v4-flash'),
-      m('deepseek-v4-pro'),
-      m('glm-5.2'),
-      m('kimi-k3'),
-      m('kimi-k2.7-code'),
-      m('kimi-k2.6'),
-      m('mimo-v2.5'),
-      m('mimo-v2.5-pro'),
-      m('minimax-m3'),
-      m('qwen3.7-max'),
-      m('qwen3.7-plus'),
-      m('qwen3.8-max'),
-    ],
+    note: 'Requires an active ClinePass subscription. Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'qwen-plan': {
     label: 'Qwen / Alibaba Model Studio plan (subscription)',
@@ -75,17 +63,8 @@ export const REGISTRY = {
     baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
     baseURLEnv: 'QWEN_PLAN_BASE_URL',
     keyEnv: ['QWEN_PLAN_API_KEY', 'DASHSCOPE_API_KEY'],
-    note: 'Plan keys (sk-sp- prefix). Singapore token-plan URL by default; set QWEN_PLAN_BASE_URL for another region.',
-    models: [
-      m('qwen3.8-max', { vision: true }),
-      m('qwen3.8-max-preview', { vision: true }),
-      m('qwen3.7-max', { vision: true }),
-      m('qwen3.7-plus'),
-      m('qwen3.6-flash', { vision: true }),
-      m('deepseek-v4-pro'),
-      m('deepseek-v4-flash-0731'),
-      m('glm-5.2'),
-    ],
+    note: 'Plan keys (sk-sp- prefix). Singapore token-plan URL by default; set QWEN_PLAN_BASE_URL for another region. Models arrive via live refresh.',
+    models: [],
   },
   commandcode: {
     label: 'Command Code Provider API (subscription)',
@@ -97,21 +76,21 @@ export const REGISTRY = {
       m('deepseek-v4-flash', { upstream: 'deepseek/deepseek-v4-flash' }),
       m('deepseek-v4-pro', { upstream: 'deepseek/deepseek-v4-pro' }),
       m('glm-5.2', { upstream: 'zai-org/GLM-5.2' }),
-      m('kimi-k3', { vision: true, upstream: 'moonshotai/Kimi-K3' }),
+      m('kimi-k3', { upstream: 'moonshotai/Kimi-K3' }),
       m('kimi-k2.7-code', { upstream: 'moonshotai/Kimi-K2.7-Code' }),
       m('mimo-v2.5-pro', { upstream: 'xiaomi/mimo-v2.5-pro' }),
-      m('minimax-m3', { vision: true, upstream: 'MiniMaxAI/MiniMax-M3' }),
+      m('minimax-m3', { upstream: 'MiniMaxAI/MiniMax-M3' }),
       m('minimax-m2.7', { upstream: 'MiniMaxAI/MiniMax-M2.7' }),
-      m('qwen3.8-max', { vision: true, upstream: 'Qwen/Qwen3.8-Max' }),
-      m('qwen3.7-max', { vision: true, upstream: 'Qwen/Qwen3.7-Max' }),
+      m('qwen3.8-max', { upstream: 'Qwen/Qwen3.8-Max' }),
+      m('qwen3.7-max', { upstream: 'Qwen/Qwen3.7-Max' }),
       m('qwen3.7-plus', { upstream: 'Qwen/Qwen3.7-Plus' }),
-      m('grok-4.5', { vision: true, upstream: 'xai/grok-4.5' }),
+      m('grok-4.5', { upstream: 'xai/grok-4.5' }),
       m('gemini-3.5-flash', { upstream: 'google/gemini-3.5-flash' }),
       m('gpt-5.5', { upstream: 'gpt-5.5' }),
       m('gpt-5.6-luna', { upstream: 'gpt-5.6-luna' }),
       m('hy3-paid', { upstream: 'tencent/hy3-paid' }),
       m('step-3.7-flash', { upstream: 'stepfun/Step-3.7-Flash' }),
-      m('claude-opus-4.8', { vision: true, protocol: 'messages', upstream: 'claude-opus-4-8' }),
+      m('claude-opus-4.8', { protocol: 'messages', upstream: 'claude-opus-4-8' }),
       m('claude-sonnet-5', { protocol: 'messages', upstream: 'claude-sonnet-5' }),
       m('claude-fable-5', { protocol: 'messages', upstream: 'claude-fable-5' }),
       m('claude-haiku-4.5', { protocol: 'messages', upstream: 'claude-haiku-4-5' }),
@@ -122,7 +101,7 @@ export const REGISTRY = {
     group: 'subscription',
     baseURL: 'https://api.minimax.io/v1',
     keyEnv: ['MINIMAX_API_KEY', 'MINIMAX_TOKEN_PLAN_API_KEY'],
-    models: [m('minimax-m3', { vision: true, upstream: 'MiniMax-M3' })],
+    models: [m('minimax-m3', { upstream: 'MiniMax-M3' })],
   },
   'ollama-cloud': {
     label: 'Ollama Cloud (subscription)',
@@ -130,10 +109,6 @@ export const REGISTRY = {
     baseURL: 'https://ollama.com/v1',
     keyEnv: ['OLLAMA_API_KEY', 'OLLAMA_CLOUD_API_KEY'],
     models: [
-      m('glm-5.2'),
-      m('kimi-k2.7-code'),
-      m('minimax-m3', { vision: true }),
-      m('deepseek-v4-pro'),
       m('deepseek-v4-flash', { upstream: 'deepseek-v4-flash:cloud' }),
     ],
   },
@@ -142,29 +117,32 @@ export const REGISTRY = {
     group: 'api',
     baseURL: 'https://api.deepseek.com/v1',
     keyEnv: ['DEEPSEEK_API_KEY'],
-    models: [m('deepseek-v4-flash'), m('deepseek-v4-pro')],
+    note: 'Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'kimi-api': {
     label: 'Kimi Platform API (global)',
     group: 'api',
     baseURL: 'https://api.moonshot.ai/v1',
     keyEnv: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
-    models: [m('kimi-k3', { vision: true })],
+    note: 'Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'kimi-api-cn': {
     label: 'Kimi Platform API (China)',
     group: 'api',
     baseURL: 'https://api.moonshot.cn/v1',
     keyEnv: ['KIMI_API_CN_KEY', 'MOONSHOT_CN_API_KEY'],
-    note: 'Keys are not interchangeable with the global platform.',
-    models: [m('kimi-k3', { vision: true })],
+    note: 'Keys are not interchangeable with the global platform. Models arrive via live refresh.',
+    models: [],
   },
   'grok-api': {
     label: 'xAI Grok API',
     group: 'api',
     baseURL: 'https://api.x.ai/v1',
     keyEnv: ['XAI_API_KEY', 'GROK_API_KEY'],
-    models: [m('grok-4.5', { vision: true })],
+    note: 'Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'anthropic-api': {
     label: 'Anthropic API',
@@ -172,7 +150,7 @@ export const REGISTRY = {
     baseURL: 'https://api.anthropic.com/v1',
     keyEnv: ['ANTHROPIC_API_KEY'],
     protocol: 'messages',
-    models: [m('claude-opus-4.8', { vision: true, protocol: 'messages', upstream: 'claude-opus-4-8' })],
+    models: [m('claude-opus-4.8', { protocol: 'messages', upstream: 'claude-opus-4-8' })],
   },
   'gemini-api': {
     label: 'Google Gemini API',
@@ -254,14 +232,20 @@ export const REGISTRY = {
   },
 };
 
+/** Merge a registry row with user overrides into a routable model (protocol, upstream rename, vision pin). */
 function hydrateModel(base, user, model) {
   const e = typeof model === 'string' ? { id: model } : model;
   const protocol = user?.overrides?.[e.id]?.protocol ?? e.protocol ?? base.protocol ?? 'openai';
-  const vision = user?.overrides?.[e.id]?.vision ?? e.vision ?? false;
+  // Only an explicit user choice pins vision: `models vision <p/m> on|off`, or
+  // `vision: true` on a user-added model (`models add --vision`, `add-custom
+  // --vision`). Bare `false` is the old default, not a choice — it stays
+  // dynamic so catalogs can upgrade the model later.
+  const visionPin = user?.overrides?.[e.id]?.vision ?? (e.vision === true ? true : undefined);
   const upstream = e.upstream || (base.upstreamPrefix ? `${base.upstreamPrefix}${e.id}` : undefined);
-  return { id: e.id, vision, protocol, ...(upstream ? { upstream } : {}) };
+  return { id: e.id, protocol, ...(upstream ? { upstream } : {}), ...(visionPin === undefined ? {} : { visionPin }) };
 }
 
+/** Registry + user config merged view of one provider (enabled state, stored key, models). */
 export function providerEntry(config, id) {
   const base = REGISTRY[id];
   const user = config?.providers?.[id];
@@ -299,6 +283,7 @@ export function providerEntry(config, id) {
   };
 }
 
+/** All known providers (registry + user-configured custom) in display order. */
 export function listProviders(config) {
   const ids = new Set([...Object.keys(REGISTRY), ...Object.keys(config?.providers || {})]);
   const entries = [...ids].map((id) => providerEntry(config, id)).filter(Boolean);
@@ -317,6 +302,7 @@ export function listProviders(config) {
   return entries;
 }
 
+/** Provider rows for the setup picker: key readiness, enabled state, note. */
 export function setupEntries(config) {
   return listProviders(config).map((p) => ({
     id: p.id,
@@ -328,6 +314,7 @@ export function setupEntries(config) {
   }));
 }
 
+/** Enable the picked providers; disable (or drop, if never configured) the rest. */
 export function applyProviderSelection(cfg, selectedIds) {
   const selected = new Set(selectedIds);
   const next = { ...cfg, providers: { ...(cfg.providers || {}) } };
@@ -346,6 +333,7 @@ export function applyProviderSelection(cfg, selectedIds) {
   return next;
 }
 
+/** Key resolution order: environment, stored key, shared with another provider. */
 export function resolveKey(entry, config) {
   for (const env of entry.keyEnv || []) {
     if (process.env[env]) return { key: process.env[env], source: `env:${env}` };
@@ -357,18 +345,25 @@ export function resolveKey(entry, config) {
   return { key: null, source: null };
 }
 
+/** Routable `provider/model` ids across enabled, keyed providers. */
 export function catalog(config) {
   const out = [];
   for (const p of listProviders(config)) {
     if (!p.enabled) continue;
     if (!resolveKey(p, config).key && !isLoopback(p.baseURL)) continue;
     for (const model of p.models) {
-      out.push({ id: `${p.id}/${model.id}`, provider: p.id, vision: model.vision });
+      out.push({ id: `${p.id}/${model.id}`, provider: p.id });
     }
   }
   return out;
 }
 
+/**
+ * Route `provider/model` to upstream coordinates. Unknown ids pass through:
+ * the router is a byte-level proxy, and upstreams ship new models before the
+ * registry does — typing `provider/new-model` in zCode just works (image
+ * support resolves dynamically; pin it with `models vision <p/m> on|off`).
+ */
 export function resolveModel(config, routedId) {
   const slash = routedId.indexOf('/');
   if (slash <= 0) return null;
@@ -380,8 +375,8 @@ export function resolveModel(config, routedId) {
   if (!key && !isLoopback(entry.baseURL)) return null;
   // Passthrough: models not in the curated list still route. The router is a
   // byte-level proxy, and upstreams ship new models before the registry does —
-  // typing `provider/new-model` in zCode just works (vision: false is the
-  // conservative default; pin it with `models add ... --vision` if needed).
+  // typing `provider/new-model` in zCode just works (image support resolves
+  // dynamically; pin it with `models vision <p/m> on|off` if needed).
   const meta = entry.models.find((model) => model.id === modelId)
     || hydrateModel(REGISTRY[providerId] || { protocol: 'openai' }, config?.providers?.[providerId], { id: modelId });
   return {
@@ -397,13 +392,14 @@ export function resolveModel(config, routedId) {
 // Vision models that are cheap enough to read screenshots all day.
 const CHEAP_TIER = /flash|haiku|mini|turbo|small|lite/i;
 
-export function autoVisionEngine(config) {
-  const candidates = [];
-  for (const item of catalog(config)) {
-    if (!item.vision) continue;
-    const route = resolveModel(config, item.id);
-    if (route) candidates.push(route);
-  }
+/** Pick the default native-vision model for the bridge, cheap tiers first; null when no catalog model qualifies. */
+export async function autoVisionEngine(config, visionOpts = {}) {
+  const ids = catalog(config).map((m) => m.id);
+  const native = await batchVisionSupport(config, ids, visionOpts);
+  const candidates = ids
+    .filter((id) => native.get(id))
+    .map((id) => resolveModel(config, id))
+    .filter(Boolean);
   candidates.sort((a, b) => Number(!CHEAP_TIER.test(a.modelId)) - Number(!CHEAP_TIER.test(b.modelId)));
   const first = candidates[0];
   return first
@@ -417,6 +413,32 @@ export function autoVisionEngine(config) {
     : null;
 }
 
+/** Pin wins; otherwise ask the public catalogs (unknown => false => bridge). */
+export async function isVisionCapable(config, routedId, visionOpts = {}) {
+  return (await batchVisionSupport(config, [routedId], visionOpts)).get(routedId) === true;
+}
+
+/** Vision support for many ids with a single catalog fetch (single-flight inside getVisionIndex). */
+export async function batchVisionSupport(config, routedIds, visionOpts = {}) {
+  const out = new Map();
+  const pending = [];
+  for (const id of routedIds) {
+    const route = resolveModel(config, id);
+    if (!route) {
+      out.set(id, false);
+      continue;
+    }
+    if (route.meta.visionPin !== undefined) out.set(id, route.meta.visionPin);
+    else pending.push({ id, key: route.upstreamModel || route.modelId });
+  }
+  if (pending.length) {
+    const index = await getVisionIndex(visionOpts);
+    for (const { id, key } of pending) out.set(id, lookupVision(index, key) === true);
+  }
+  return out;
+}
+
+/** Auth headers matching the provider's wire protocol (Bearer vs x-api-key). */
 export function probeHeaders(entry, key) {
   if (entry?.protocol === 'messages') {
     return key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {};
@@ -424,6 +446,7 @@ export function probeHeaders(entry, key) {
   return key ? { authorization: `Bearer ${key}` } : {};
 }
 
+/** True for loopback hosts, in both IPv6 spellings (`::1` and `[::1]`). */
 export function isLoopback(url) {
   try {
     const h = new URL(url).hostname;
@@ -433,8 +456,10 @@ export function isLoopback(url) {
   }
 }
 
-// Upstream base URLs must be HTTPS — API keys ride in every request header.
-// Loopback is exempt so local runtimes (Ollama, LM Studio) can be vision engines.
+/**
+ * Upstream base URLs must be HTTPS — API keys ride in every request header.
+ * Loopback is exempt so local runtimes (Ollama, LM Studio) can be vision engines.
+ */
 export function assertSafeBaseURL(url) {
   let u;
   try {

@@ -1,9 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { REGISTRY, providerEntry, resolveModel, resolveKey, catalog, autoVisionEngine, assertSafeBaseURL } from '../src/providers.js';
+import { REGISTRY, providerEntry, resolveModel, resolveKey, catalog, autoVisionEngine, isVisionCapable, assertSafeBaseURL } from '../src/providers.js';
+import { clearVisionCapabilitiesCache } from '../src/vision-capabilities.js';
+import { tempVisionCache } from './helpers.js';
 
+/** Minimal config with the given provider map. */
 function cfgWith(providers) {
   return { localKey: 'k', port: 1, providers, visionBridge: { enabled: true, engine: 'auto', local: null } };
+}
+
+/**
+ * Stub for https://models.dev/api.json — fresh fetchImpl per test defeats the
+ * module-level single-flight cache, temp cachePath keeps disk hermetic.
+ */
+function stubSources(t, modelsDev) {
+  clearVisionCapabilitiesCache();
+  return async (url) => {
+    if (String(url).includes('models.dev')) {
+      return new Response(JSON.stringify(modelsDev), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`unexpected fetch in test: ${url}`);
+  };
 }
 
 test('registry providers resolve with stored key and overrides', () => {
@@ -13,8 +30,8 @@ test('registry providers resolve with stored key and overrides', () => {
   const route = resolveModel(cfg, 'deepseek/deepseek-v4-flash');
   assert.equal(route.key, 'sk-test');
   assert.equal(route.baseURL, 'https://api.deepseek.com/v1');
-  assert.equal(route.meta.vision, true, 'user override wins');
-  assert.equal(resolveModel(cfg, 'deepseek/deepseek-v4-pro').meta.vision, false);
+  assert.equal(route.meta.visionPin, true, 'user override wins');
+  assert.equal(resolveModel(cfg, 'deepseek/deepseek-v4-pro').meta.visionPin, undefined, 'no pin: resolves dynamically');
 });
 
 test('disabled or keyless providers are invisible to the catalog', () => {
@@ -50,24 +67,28 @@ test('custom providers resolve and list', () => {
   assert.deepEqual(catalog(cfg).map((m) => m.id), ['lmstudio/qwen2.5-vl-3b']);
 });
 
-test('auto vision engine prefers cheap tiers and needs vision+key', () => {
+test('auto vision engine prefers cheap tiers and needs vision+key', async () => {
   const cfg = cfgWith({
     'opencode-go': { enabled: true, key: 'sk-oc' },
   });
-  const engine = autoVisionEngine(cfg);
+  const fetchImpl = stubSources(null, {
+    'opencode-go': { models: { 'minimax-m3': { modalities: { input: ['text', 'image'] } } } },
+  });
+  const engine = await autoVisionEngine(cfg, { fetchImpl, cachePath: tempVisionCache() });
   assert.equal(engine.label, 'opencode-go/minimax-m3', 'cheapest vision-flagged opencode-go model');
 });
 
-test('auto vision engine returns null with no vision models', () => {
+test('auto vision engine returns null with no vision models', async () => {
   const cfg = cfgWith({ deepseek: { enabled: true, key: 'sk' } });
-  assert.equal(autoVisionEngine(cfg), null);
+  const fetchImpl = stubSources(null, { deepseek: { models: { 'deepseek-v4-flash': { modalities: { input: ['text'] } } } } });
+  assert.equal(await autoVisionEngine(cfg, { fetchImpl, cachePath: tempVisionCache() }), null);
 });
 
 test('unknown model ids passthrough an enabled provider', () => {
   const cfg = cfgWith({ 'opencode-go': { enabled: true, key: 'sk-oc' } });
   const route = resolveModel(cfg, 'opencode-go/brand-new-model');
   assert.equal(route.modelId, 'brand-new-model');
-  assert.equal(route.meta.vision, false, 'conservative default for unknown models');
+  assert.equal(route.meta.visionPin, undefined, 'unknown models stay dynamic, never pinned');
   assert.equal(route.meta.protocol, 'openai');
   assert.equal(route.baseURL, 'https://opencode.ai/zen/go/v1');
   assert.equal(resolveModel(cfg, 'nobody/brand-new-model'), null);
@@ -80,7 +101,7 @@ test('models added via config extra appear in the catalog with protocol', () => 
   });
   assert.ok(catalog(cfg).map((m) => m.id).includes('opencode-go/shiny-new'));
   const route = resolveModel(cfg, 'opencode-go/shiny-new');
-  assert.equal(route.meta.vision, true);
+  assert.equal(route.meta.visionPin, true, '--vision pins native');
   assert.equal(route.meta.protocol, 'messages');
 });
 
@@ -109,7 +130,10 @@ test('subscription providers from the codex-router catalog are registered', () =
     assert.ok(ids.includes(id), `missing provider ${id}`);
   }
   assert.ok(!ids.includes('zai-coding'), 'ZCode already ships GLM Coding Plan — do not duplicate it');
-  assert.ok(REGISTRY['qwen-plan'].models.some((m) => m.id === 'qwen3.8-max'));
+  assert.deepEqual(REGISTRY['qwen-plan'].models, [], 'plain ids arrive via live refresh, not the registry');
+  assert.deepEqual(REGISTRY.clinepass.models, [], 'upstreamPrefix covers clinepass renames — nothing to pin');
+  assert.ok(REGISTRY['opencode-go'].models.every((m) => m.protocol === 'messages' || m.upstream), 'registry keeps wire exceptions only');
+  assert.ok(REGISTRY['opencode-go'].models.some((m) => m.id === 'minimax-m3' && m.protocol === 'messages'));
   assert.ok(REGISTRY.commandcode.models.some((m) => m.id === 'claude-opus-4.8' && m.protocol === 'messages'));
   assert.equal(REGISTRY['anthropic-api'].protocol, 'messages');
   assert.equal(REGISTRY.groq.models.length, 0, 'catalog-only providers ship no pinned models');
@@ -135,17 +159,39 @@ test('clinepass and commandcode rewrite the upstream model id', () => {
   assert.equal(resolveModel(cfg, 'anthropic-api/claude-opus-4.8').upstreamModel, 'claude-opus-4-8');
 });
 
-test('kimi-k3 and qwen max on opencode-go are vision-capable', () => {
+test('kimi-k3 and qwen max on opencode-go are vision-capable', async () => {
   const cfg = cfgWith({ 'opencode-go': { enabled: true, key: 'sk-oc' } });
-  assert.equal(resolveModel(cfg, 'opencode-go/kimi-k3').meta.vision, true);
-  assert.equal(resolveModel(cfg, 'opencode-go/qwen3.8-max').meta.vision, true);
+  const fetchImpl = stubSources(null, {
+    moonshotai: { models: { 'kimi-k3': { modalities: { input: ['text', 'image', 'video'] } } } },
+    qwen: { models: { 'qwen3.8-max': { modalities: { input: ['text', 'image', 'video'] } } } },
+  });
+  const vo = { fetchImpl, cachePath: tempVisionCache() };
+  assert.equal(await isVisionCapable(cfg, 'opencode-go/kimi-k3', vo), true);
+  assert.equal(await isVisionCapable(cfg, 'opencode-go/qwen3.8-max', vo), true);
+  assert.equal(await isVisionCapable(cfg, 'opencode-go/deepseek-v4-flash', vo), false, 'unknown to catalogs stays text-only');
+});
+
+test('vision pin beats the dynamic lookup both ways', async () => {
+  const cfg = cfgWith({
+    'opencode-go': {
+      enabled: true,
+      key: 'sk-oc',
+      overrides: { 'kimi-k3': { vision: false }, 'deepseek-v4-flash': { vision: true } },
+    },
+  });
+  const fetchImpl = stubSources(null, {
+    moonshotai: { models: { 'kimi-k3': { modalities: { input: ['text', 'image'] } } } },
+  });
+  const vo = { fetchImpl, cachePath: tempVisionCache() };
+  assert.equal(await isVisionCapable(cfg, 'opencode-go/kimi-k3', vo), false, 'off pin wins over catalog vision');
+  assert.equal(await isVisionCapable(cfg, 'opencode-go/deepseek-v4-flash', vo), true, 'on pin wins over catalog miss');
 });
 
 test('passthrough models honor vision overrides without models add', () => {
   const cfg = cfgWith({
     groq: { enabled: true, key: 'sk-groq', overrides: { 'llama-3.3-70b': { vision: true } } },
   });
-  assert.equal(resolveModel(cfg, 'groq/llama-3.3-70b').meta.vision, true);
+  assert.equal(resolveModel(cfg, 'groq/llama-3.3-70b').meta.visionPin, true);
 });
 
 test('qwen-plan base URL can be overridden by env', () => {

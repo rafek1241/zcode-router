@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile, isNpxCachePath } from './config.js';
-import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, setupEntries, applyProviderSelection } from './providers.js';
+import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, isLoopback, setupEntries, applyProviderSelection, batchVisionSupport } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
 import { patchZcodeConfig } from './zcode-config.js';
@@ -12,7 +12,7 @@ import { describeServiceTarget, installService, serviceStatus, startService, sto
 import { dockerDown, dockerStatus, installDocker } from './docker.js';
 import { pickProviders, renderVisionChoices, visionSetupChoice } from './setup-ui.js';
 import { applyDoctorFixes, collectDoctorChecks, formatDoctorReport } from './doctor.js';
-import { refreshCatalog } from './catalog-refresh.js';
+import { refreshCatalog, refreshEmptyProviders } from './catalog-refresh.js';
 import { formatLastError, readLastError } from './last-error.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -21,6 +21,7 @@ const runningFromNpxCache = isNpxCachePath(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(...a);
 const err = (...a) => console.error(...a);
 
+/** CLI entry: dispatch a subcommand. */
 export async function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
@@ -49,6 +50,7 @@ export async function main(argv) {
   }
 }
 
+/** Usage text. */
 function printHelp() {
   log(`zcode-router ${VERSION} — local model router for ZCode with a vision bridge
 
@@ -76,7 +78,7 @@ Providers & models:
   providers add-custom <id> --base-url URL --models a,b,c [--vision b] [--messages d]
   providers remove-custom <id>
   models                         List the catalog zCode will see
-  models vision <p/m> on|off     Override a model's image support flag (passthrough ids too)
+  models vision <p/m> on|off|auto  Pin image support (auto = follow public catalogs)
   models add <p/m> [--vision] [--protocol messages]
                                  List a model that is not in the registry (new upstream
                                  models route through enabled providers anyway)
@@ -100,6 +102,7 @@ State directory: ${homeDir()} (override with ZCODE_ROUTER_HOME)`);
 
 // ---------- setup ----------
 
+/** Guided setup: provider pick, keys, live model refresh, vision choice, background runner. */
 async function cmdSetup() {
   if (!process.stdin.isTTY) {
     err('setup is interactive. Use `providers key <id> set` / `providers enable <id>` for scripts.');
@@ -141,13 +144,29 @@ async function cmdSetup() {
         if (key) cfg.providers[id].key = key;
       }
     }
+    // Keys exist now, so pull each provider's live model list — the registry
+    // only keeps wire-protocol exceptions, everything else arrives here.
+    // Best-effort: offline or odd upstreams just log and move on.
+    for (const id of chosen) {
+      const entry = providerEntry(cfg, id);
+      if (!entry?.enabled || isLoopback(entry.baseURL)) continue;
+      if (!resolveKey(entry, cfg).key) continue;
+      try {
+        const result = await refreshCatalog(cfg, id);
+        if (result.added.length) log(`  ${id}: picked up ${result.added.length} model(s): ${result.added.join(', ')}`);
+      } catch (e) {
+        log(`  ${id}: live model list unavailable (${e.message}) — type ids manually or run \`models refresh\` later.`);
+      }
+    }
     const engine = cfg.visionBridge?.engine;
     if (engine && engine !== 'auto' && engine !== 'local' && !chosen.includes(engine.split('/')[0])) {
       cfg.visionBridge = { ...(cfg.visionBridge || {}), engine: 'auto' };
     }
     rl = createInterface({ input: process.stdin, output: process.stdout });
     ask = makeAsk();
-    const candidates = catalog(cfg).filter((m) => m.vision).map((m) => ({ id: m.id, label: m.id }));
+    const enabledModels = catalog(cfg);
+    const setupNative = await batchVisionSupport(cfg, enabledModels.map((m) => m.id));
+    const candidates = enabledModels.filter((m) => setupNative.get(m.id)).map((m) => ({ id: m.id, label: m.id }));
     log(`\n${renderVisionChoices({ candidates })}`);
     let vision = visionSetupChoice(await ask('Choice [1]: '), { candidates });
     while (vision.error) {
@@ -218,6 +237,7 @@ async function cmdSetup() {
 
 // ---------- start ----------
 
+/** Validate config, start listening, backfill empty providers, print the zCode copy-paste block. */
 async function cmdStart(args) {
   if (runningFromNpxCache) {
     err('\nwarning: you are running from a temporary `npx` cache — npm may delete these files');
@@ -258,6 +278,13 @@ async function cmdStart(args) {
     }
   }
   if (catalog(cfg).length === 0) {
+    // An upgrade can leave every enabled provider with zero models (registry
+    // presets removed, key stored). Backfill once before refusing to start;
+    // offline upstreams fail here and the guard below still applies.
+    const ids = await refreshEmptyProviders(cfg, { log: (m) => err(`[router] ${m}`) });
+    if (ids.length) saveConfig(cfg);
+  }
+  if (catalog(cfg).length === 0) {
     err('No routable models: enable a provider and store its key first (`zcode-router setup`).');
     process.exitCode = 1;
     return;
@@ -275,10 +302,20 @@ async function cmdStart(args) {
       : `http://127.0.0.1:${cfg.port} (loopback only)`;
   log(`zcode-router ${VERSION} listening on ${where}${verbose ? ' [verbose]' : ''}`);
   printZCodeBlock(cfg);
+  // Registry presets are gone, so a provider upgraded with only a stored key
+  // serves an empty catalog until refreshed. Pull live lists in the background
+  // (same as setup does after keys); the server routes meanwhile.
+  refreshEmptyProviders(cfg, { log: (m) => err(`[router] ${m}`) })
+    .then((ids) => {
+      if (ids.length) saveConfig(cfg);
+    })
+    .catch(() => {});
   log('\nModels served (copy-paste into zCode if the list does not auto-load):');
-  const engine = resolveVisionEngine(cfg);
-  for (const m of catalog(cfg)) {
-    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+  const engine = await resolveVisionEngine(cfg);
+  const startItems = catalog(cfg);
+  const startNative = await batchVisionSupport(cfg, startItems.map((m) => m.id));
+  for (const m of startItems) {
+    const tag = startNative.get(m.id) ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
     log(`  ${m.id}  ${tag}`);
   }
   log(`Vision bridge: ${cfg.visionBridge?.enabled === false ? 'off' : engine ? `on, engine ${engine.label}` : 'on, but no vision engine available (images stay refused)'}`);
@@ -298,6 +335,7 @@ async function cmdStart(args) {
   process.on('SIGTERM', shutdown);
 }
 
+/** `service install|uninstall|status|start|stop` against the platform's native runner. */
 function cmdService(rest) {
   const [sub] = rest;
   switch (sub) {
@@ -346,6 +384,7 @@ function cmdService(rest) {
   }
 }
 
+/** `docker [up|down|status]` via compose files in the state dir. */
 function cmdDocker(rest) {
   const [sub] = rest;
   switch (sub) {
@@ -381,6 +420,7 @@ function cmdDocker(rest) {
   }
 }
 
+/** Print what patchZcodeConfig changed. */
 function reportZcodePatch(result) {
   if (!result.ok && result.reason === 'no-config') {
     log(`zCode config not found at ${result.path} — skip (ok if zCode is not installed here).`);
@@ -409,6 +449,7 @@ function reportZcodePatch(result) {
   log('Fully quit zCode and start a new chat for the patch to apply.');
 }
 
+/** `zcode-patch`: upsert the zCode provider record from the current router config. */
 function cmdZcodePatch() {
   const cfg = loadConfig() || defaultConfig();
   const result = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg });
@@ -416,6 +457,7 @@ function cmdZcodePatch() {
   if (!result.ok && result.reason !== 'no-config') process.exitCode = 1;
 }
 
+/** Copy-paste provider settings for zCode's Add Provider screen. */
 function printZCodeBlock(cfg) {
   log(`
 ZCode setup (Settings → Model Settings → Add Provider):
@@ -428,6 +470,7 @@ After changing the router, click Refresh on this provider and start a new chat �
 
 // ---------- doctor ----------
 
+/** `doctor [--probe] [--json] [--fix]`, plus `doctor last` for the stored upstream error. */
 async function cmdDoctor(args) {
   if (args[0] === 'last') {
     const saved = readLastError({ maxAgeMs: Infinity });
@@ -458,6 +501,7 @@ async function cmdDoctor(args) {
 
 // ---------- selftest ----------
 
+/** `selftest`: in-process end-to-end checks against the mock upstream. */
 async function cmdSelftest() {
   log('Selftest uses a mock in-process provider on 127.0.0.1 — no real provider, account, or network needed.\n');
   const passed = await runSelftest(log);
@@ -466,6 +510,7 @@ async function cmdSelftest() {
 
 // ---------- providers / models ----------
 
+/** `providers` list plus enable/disable/key/add-custom/remove-custom subcommands. */
 async function cmdProviders(rest) {
   const [sub, id, ...tail] = rest;
   if (!sub || sub === 'list') {
@@ -549,19 +594,21 @@ async function cmdProviders(rest) {
   process.exitCode = 1;
 }
 
+/** Error and exit for an unknown provider id. */
 function unknownProvider(id) {
   err(`Unknown provider "${id}". Known: ${[...Object.keys(REGISTRY)].join(', ')} (or add-custom).`);
   process.exitCode = 1;
 }
 
+/** `models` list/vision/add/remove/refresh — the catalog zCode will see. */
 async function cmdModels(rest) {
   const cfg = loadConfig();
   const [sub, target, value] = rest;
   if (sub === 'vision') {
     if (!cfg) return noConfig();
     const parsed = splitModelId(target);
-    if (!parsed || !['on', 'off'].includes(value)) {
-      err('Usage: models vision <provider/model> on|off');
+    if (!parsed || !['on', 'off', 'auto'].includes(value)) {
+      err('Usage: models vision <provider/model> on|off|auto');
       process.exitCode = 1;
       return;
     }
@@ -569,10 +616,18 @@ async function cmdModels(rest) {
     const entry = providerEntry(cfg, pid);
     if (!entry) return unknownProvider(pid);
     cfg.providers[pid] = cfg.providers[pid] || {};
-    cfg.providers[pid].overrides = {
-      ...(cfg.providers[pid].overrides || {}),
-      [mid]: { ...(cfg.providers[pid].overrides?.[mid] || {}), vision: value === 'on' },
-    };
+    const overrides = { ...(cfg.providers[pid].overrides || {}) };
+    if (value === 'auto') {
+      if (overrides[mid]) delete overrides[mid].vision;
+      if (overrides[mid] && Object.keys(overrides[mid]).length === 0) delete overrides[mid];
+      if (Object.keys(overrides).length === 0) delete cfg.providers[pid].overrides;
+      else cfg.providers[pid].overrides = overrides;
+    } else {
+      cfg.providers[pid].overrides = {
+        ...overrides,
+        [mid]: { ...(overrides[mid] || {}), vision: value === 'on' },
+      };
+    }
     saveConfig(cfg);
     log(`${target}: vision ${value}.`);
     return;
@@ -590,7 +645,7 @@ async function cmdModels(rest) {
     if (!entry) return unknownProvider(target);
     cfg.providers[pid] = cfg.providers[pid] || {};
     if (sub === 'add') {
-      const spec = { id: mid, vision: rest.includes('--vision'), protocol: flag(rest, '--protocol') === 'messages' ? 'messages' : 'openai' };
+      const spec = { id: mid, protocol: flag(rest, '--protocol') === 'messages' ? 'messages' : 'openai', ...(rest.includes('--vision') ? { vision: true } : {}) };
       const extra = cfg.providers[pid].extra || [];
       const existing = extra.findIndex((m) => (typeof m === 'string' ? m : m.id) === mid);
       if (existing === -1) extra.push(spec);
@@ -661,18 +716,21 @@ async function cmdModels(rest) {
     log('(no routable models — run `zcode-router setup`)');
     return;
   }
-  const engine = resolveVisionEngine(cfg);
+  const engine = await resolveVisionEngine(cfg);
+  const listNative = await batchVisionSupport(cfg, items.map((m) => m.id));
   for (const m of items) {
-    const tag = m.vision ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
+    const tag = listNative.get(m.id) ? '[vision]' : engine ? '[text-only, vision-bridged]' : '[text-only]';
     log(`${m.id}  ${tag}`);
   }
 }
 
+/** Shared "run setup first" error. */
 function noConfig() {
   err(`No config at ${configPath()} yet. Run \`zcode-router setup\` first.`);
   process.exitCode = 1;
 }
 
+/** Split `provider/model` on the first slash; null when there is no provider part. */
 function splitModelId(target) {
   const slash = target?.indexOf('/') ?? -1;
   if (slash <= 0) return null;
@@ -681,14 +739,15 @@ function splitModelId(target) {
 
 // ---------- vision-bridge ----------
 
-function cmdVisionBridge(rest) {
+/** `vision-bridge` status / on|off / engine auto|<provider/model>|local. */
+async function cmdVisionBridge(rest) {
   const cfg = loadConfig();
   if (!cfg) return noConfig();
   cfg.visionBridge = cfg.visionBridge || { enabled: true, engine: 'auto', local: null };
   const [sub, ...tail] = rest;
 
   if (!sub || sub === 'status') {
-    const engine = resolveVisionEngine(cfg);
+    const engine = await resolveVisionEngine(cfg);
     log(`vision bridge: ${cfg.visionBridge.enabled === false ? 'OFF' : 'on'}`);
     log(`engine: ${engine ? engine.label : 'none available'}`);
     if (cfg.visionBridge.local) log(`local: ${cfg.visionBridge.local.model} @ ${cfg.visionBridge.local.baseURL}`);
@@ -734,6 +793,7 @@ function cmdVisionBridge(rest) {
 
 // ---------- update ----------
 
+/** `update`: npm install of the latest global package. */
 function cmdUpdate() {
   log('Updating zcode-router via npm...');
   const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '-g', 'zcode-router@latest'], { stdio: 'inherit' });
@@ -747,6 +807,7 @@ function cmdUpdate() {
   });
 }
 
+/** Daily best-effort npm registry check; warns on stderr when a newer version exists. */
 async function checkForUpdate(cfg) {
   const stateFile = path.join(homeDir(), 'update-check.json');
   try {
@@ -762,6 +823,7 @@ async function checkForUpdate(cfg) {
   }
 }
 
+/** Three-part numeric version comparison: is `a` newer than `b`? */
 function isNewer(a, b) {
   const pa = a.split('.').map(Number);
   const pb = b.split('.').map(Number);
@@ -773,11 +835,13 @@ function isNewer(a, b) {
 
 // ---------- helpers ----------
 
+/** Value of `--name <value>` in an arg list, or null. */
 function flag(args, name) {
   const i = args.indexOf(name);
   return i === -1 ? null : args[i + 1];
 }
 
+/** Read a secret without echo: raw-mode TTY (backspace works, Ctrl-C exits 130), plain line elsewhere. */
 function hiddenPrompt(question) {
   return new Promise((resolve) => {
     const stdin = process.stdin;

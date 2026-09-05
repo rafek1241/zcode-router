@@ -170,6 +170,45 @@ test('broken vision engine degrades to a stated failure, not a crash', async (t)
   assert.ok(failure, 'stated failure substituted');
 });
 
+test('native images rejected by upstream retry once through the bridge', async (t) => {
+  // The vision pin says native, the upstream disagrees (HTTP 400 about images).
+  let rig;
+  let imageHits = 0;
+  const flaky = async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    rig.state.requests.push(body);
+    const hasImage = body.messages?.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+    const reply = (content) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'x', object: 'chat.completion', created: 0, model: body.model, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] }));
+    };
+    if (hasImage) {
+      imageHits += 1;
+      if (imageHits === 1) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'This model does not support image input', type: 'invalid_request_error' } }));
+        return;
+      }
+      reply('VISION-READ(mock-vision)');
+      return;
+    }
+    reply('ok bridged');
+  };
+  rig = await makeRig(t, { upstreamHandler: flaky });
+  const res = await rig.chat({
+    model: 'mock/mock-vision',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: PNG_1PX } }] }],
+  });
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.match(data.choices[0].message.content, /ok bridged/);
+  assert.equal(rig.state.requests.length, 3, 'native, engine read, bridged retry');
+  const last = rig.state.requests.at(-1).messages[0].content;
+  assert.ok(!last.some((p) => p.type === 'image_url'), 'retry carries evidence text, not the image');
+});
+
 test('bridge off leaves the request alone', async (t) => {
   const { chat, state, config } = await makeRig(t);
   config.visionBridge.enabled = false;

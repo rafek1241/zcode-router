@@ -1,10 +1,32 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRouter } from './server.js';
 
-// In-process mock upstream: proves the whole pipeline (auth, routing,
-// streaming, tool calls, vision bridge) without touching a real provider
-// or spending a cent. Bound to 127.0.0.1 on an ephemeral port.
+/**
+ * Loopback reaches mock upstreams; anything external (e.g. the vision
+ * capability catalogs) fails fast instead of hitting the network. Shared with
+ * the test rig.
+ */
+export function loopbackFetch(url, opts) {
+  try {
+    const h = new URL(String(url)).hostname;
+    // `new URL` keeps IPv6 brackets in .hostname, so both spellings are listed
+    // (same as isLoopback in providers.js).
+    if (h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]') return fetch(url, opts);
+  } catch {
+    /* fall through to reject */
+  }
+  return Promise.reject(new Error(`external fetch blocked: ${url}`));
+}
+
+/**
+ * In-process mock upstream: proves the whole pipeline (auth, routing,
+ * streaming, tool calls, vision bridge) without touching a real provider
+ * or spending a cent. Bound to 127.0.0.1 on an ephemeral port.
+ */
 function createMockUpstream(state) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -65,6 +87,7 @@ function createMockUpstream(state) {
   });
 }
 
+/** Last user message as plain text (string or parts), for mock replies and assertions. */
 function lastUserText(body) {
   const msgs = [...(body.messages || [])].reverse();
   for (const m of msgs) {
@@ -84,6 +107,10 @@ const PNG_1PX =
 const PNG_1PX_ALT =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 
+/**
+ * End-to-end checks against the in-process mock: 16 checks, no network, no
+ * spend. Exits nonzero on any failure (`npm run selftest`).
+ */
 export async function runSelftest(log = console.log) {
   const results = [];
   const check = (name, ok, detail = '') => {
@@ -115,7 +142,12 @@ export async function runSelftest(log = console.log) {
     visionBridge: { enabled: true, engine: 'auto', local: null },
   };
 
-  const server = createRouter({ config, log: () => {} });
+  const server = createRouter({
+    config,
+    log: () => {},
+    fetchImpl: loopbackFetch,
+    visionOpts: { cachePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-router-selftest-')), 'vision.json') },
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
   const base = `http://127.0.0.1:${port}`;
@@ -259,6 +291,7 @@ export async function runSelftest(log = console.log) {
   return failed === 0;
 }
 
+/** POST a chat completion to the router and return the parsed body. */
 function chat(base, auth, body) {
   return fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: auth, body: JSON.stringify(body) });
 }

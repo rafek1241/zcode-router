@@ -207,8 +207,13 @@ zcode-router vision-bridge engine local --base-url http://127.0.0.1:1234/v1 --mo
 
 (That's LM Studio's default address; Ollama is `http://127.0.0.1:11434/v1`.)
 Other handy tweaks: `zcode-router vision-bridge off` to never spend vision quota on
-pastes, or `zcode-router models vision <provider/model> on|off` to override whether a
-model is treated as vision-capable.
+pastes, or `zcode-router models vision <provider/model> on|off|auto` to pin (or
+unpin) whether a model is treated as vision-capable.
+
+Image support is detected dynamically from public catalogs (models.dev first,
+OpenRouter as fallback, cached 24 h) — no hardcoded list to go stale. Unknown
+models default to text-only, and if a native image send is rejected with
+HTTP 400 or 422, the router retries exactly once through the bridge.
 
 ## Security
 
