@@ -172,6 +172,7 @@ test('subscription providers from the codex-router catalog are registered', () =
   assert.ok(REGISTRY['opencode-go'].models.every((m) => ['messages', 'responses'].includes(m.protocol) || m.upstream), 'registry keeps wire exceptions only');
   assert.ok(REGISTRY['opencode-go'].models.some((m) => m.id === 'minimax-m3' && m.protocol === 'messages'));
   assert.ok(REGISTRY['opencode-go'].models.some((m) => m.id === 'muse-spark-1.3-contributor' && m.protocol === 'responses'));
+  assert.ok(REGISTRY['opencode-go'].models.some((m) => m.id === 'gpt-5.6-luna' && m.protocol === 'responses'));
   assert.ok(REGISTRY.commandcode.models.some((m) => m.id === 'claude-opus-4.8' && m.protocol === 'messages'));
   assert.equal(REGISTRY['anthropic-api'].protocol, 'messages');
   assert.equal(REGISTRY.groq.models.length, 0, 'catalog-only providers ship no pinned models');
