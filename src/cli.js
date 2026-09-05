@@ -21,6 +21,7 @@ const runningFromNpxCache = isNpxCachePath(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(...a);
 const err = (...a) => console.error(...a);
 
+/** CLI entry: dispatch a subcommand. */
 export async function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
@@ -49,6 +50,7 @@ export async function main(argv) {
   }
 }
 
+/** Usage text. */
 function printHelp() {
   log(`zcode-router ${VERSION} — local model router for ZCode with a vision bridge
 
@@ -100,6 +102,7 @@ State directory: ${homeDir()} (override with ZCODE_ROUTER_HOME)`);
 
 // ---------- setup ----------
 
+/** Guided setup: provider pick, keys, live model refresh, vision choice, background runner. */
 async function cmdSetup() {
   if (!process.stdin.isTTY) {
     err('setup is interactive. Use `providers key <id> set` / `providers enable <id>` for scripts.');
@@ -234,6 +237,7 @@ async function cmdSetup() {
 
 // ---------- start ----------
 
+/** Validate config, start listening, backfill empty providers, print the zCode copy-paste block. */
 async function cmdStart(args) {
   if (runningFromNpxCache) {
     err('\nwarning: you are running from a temporary `npx` cache — npm may delete these files');
@@ -331,6 +335,7 @@ async function cmdStart(args) {
   process.on('SIGTERM', shutdown);
 }
 
+/** `service install|uninstall|status|start|stop` against the platform's native runner. */
 function cmdService(rest) {
   const [sub] = rest;
   switch (sub) {
@@ -379,6 +384,7 @@ function cmdService(rest) {
   }
 }
 
+/** `docker [up|down|status]` via compose files in the state dir. */
 function cmdDocker(rest) {
   const [sub] = rest;
   switch (sub) {
@@ -414,6 +420,7 @@ function cmdDocker(rest) {
   }
 }
 
+/** Print what patchZcodeConfig changed. */
 function reportZcodePatch(result) {
   if (!result.ok && result.reason === 'no-config') {
     log(`zCode config not found at ${result.path} — skip (ok if zCode is not installed here).`);
@@ -442,6 +449,7 @@ function reportZcodePatch(result) {
   log('Fully quit zCode and start a new chat for the patch to apply.');
 }
 
+/** `zcode-patch`: upsert the zCode provider record from the current router config. */
 function cmdZcodePatch() {
   const cfg = loadConfig() || defaultConfig();
   const result = patchZcodeConfig({ port: cfg.port, localKey: cfg.localKey, config: cfg });
@@ -449,6 +457,7 @@ function cmdZcodePatch() {
   if (!result.ok && result.reason !== 'no-config') process.exitCode = 1;
 }
 
+/** Copy-paste provider settings for zCode's Add Provider screen. */
 function printZCodeBlock(cfg) {
   log(`
 ZCode setup (Settings → Model Settings → Add Provider):
@@ -461,6 +470,7 @@ After changing the router, click Refresh on this provider and start a new chat �
 
 // ---------- doctor ----------
 
+/** `doctor [--probe] [--json] [--fix]`, plus `doctor last` for the stored upstream error. */
 async function cmdDoctor(args) {
   if (args[0] === 'last') {
     const saved = readLastError({ maxAgeMs: Infinity });
@@ -491,6 +501,7 @@ async function cmdDoctor(args) {
 
 // ---------- selftest ----------
 
+/** `selftest`: in-process end-to-end checks against the mock upstream. */
 async function cmdSelftest() {
   log('Selftest uses a mock in-process provider on 127.0.0.1 — no real provider, account, or network needed.\n');
   const passed = await runSelftest(log);
@@ -499,6 +510,7 @@ async function cmdSelftest() {
 
 // ---------- providers / models ----------
 
+/** `providers` list plus enable/disable/key/add-custom/remove-custom subcommands. */
 async function cmdProviders(rest) {
   const [sub, id, ...tail] = rest;
   if (!sub || sub === 'list') {
@@ -582,11 +594,13 @@ async function cmdProviders(rest) {
   process.exitCode = 1;
 }
 
+/** Error and exit for an unknown provider id. */
 function unknownProvider(id) {
   err(`Unknown provider "${id}". Known: ${[...Object.keys(REGISTRY)].join(', ')} (or add-custom).`);
   process.exitCode = 1;
 }
 
+/** `models` list/vision/add/remove/refresh — the catalog zCode will see. */
 async function cmdModels(rest) {
   const cfg = loadConfig();
   const [sub, target, value] = rest;
@@ -710,11 +724,13 @@ async function cmdModels(rest) {
   }
 }
 
+/** Shared "run setup first" error. */
 function noConfig() {
   err(`No config at ${configPath()} yet. Run \`zcode-router setup\` first.`);
   process.exitCode = 1;
 }
 
+/** Split `provider/model` on the first slash; null when there is no provider part. */
 function splitModelId(target) {
   const slash = target?.indexOf('/') ?? -1;
   if (slash <= 0) return null;
@@ -723,6 +739,7 @@ function splitModelId(target) {
 
 // ---------- vision-bridge ----------
 
+/** `vision-bridge` status / on|off / engine auto|<provider/model>|local. */
 async function cmdVisionBridge(rest) {
   const cfg = loadConfig();
   if (!cfg) return noConfig();
@@ -776,6 +793,7 @@ async function cmdVisionBridge(rest) {
 
 // ---------- update ----------
 
+/** `update`: npm install of the latest global package. */
 function cmdUpdate() {
   log('Updating zcode-router via npm...');
   const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '-g', 'zcode-router@latest'], { stdio: 'inherit' });
@@ -789,6 +807,7 @@ function cmdUpdate() {
   });
 }
 
+/** Daily best-effort npm registry check; warns on stderr when a newer version exists. */
 async function checkForUpdate(cfg) {
   const stateFile = path.join(homeDir(), 'update-check.json');
   try {
@@ -804,6 +823,7 @@ async function checkForUpdate(cfg) {
   }
 }
 
+/** Three-part numeric version comparison: is `a` newer than `b`? */
 function isNewer(a, b) {
   const pa = a.split('.').map(Number);
   const pb = b.split('.').map(Number);
@@ -815,11 +835,13 @@ function isNewer(a, b) {
 
 // ---------- helpers ----------
 
+/** Value of `--name <value>` in an arg list, or null. */
 function flag(args, name) {
   const i = args.indexOf(name);
   return i === -1 ? null : args[i + 1];
 }
 
+/** Read a secret without echo: raw-mode TTY (backspace works, Ctrl-C exits 130), plain line elsewhere. */
 function hiddenPrompt(question) {
   return new Promise((resolve) => {
     const stdin = process.stdin;

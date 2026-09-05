@@ -4,12 +4,15 @@ import { REGISTRY, providerEntry, resolveModel, resolveKey, catalog, autoVisionE
 import { clearVisionCapabilitiesCache } from '../src/vision-capabilities.js';
 import { tempVisionCache } from './helpers.js';
 
+/** Minimal config with the given provider map. */
 function cfgWith(providers) {
   return { localKey: 'k', port: 1, providers, visionBridge: { enabled: true, engine: 'auto', local: null } };
 }
 
-// Stub for https://models.dev/api.json — fresh fetchImpl per test defeats the
-// module-level single-flight cache, temp cachePath keeps disk hermetic.
+/**
+ * Stub for https://models.dev/api.json — fresh fetchImpl per test defeats the
+ * module-level single-flight cache, temp cachePath keeps disk hermetic.
+ */
 function stubSources(t, modelsDev) {
   clearVisionCapabilitiesCache();
   return async (url) => {

@@ -5,9 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRouter } from './server.js';
 
-// Loopback reaches mock upstreams; anything external (e.g. the vision
-// capability catalogs) fails fast instead of hitting the network. Shared with
-// the test rig.
+/**
+ * Loopback reaches mock upstreams; anything external (e.g. the vision
+ * capability catalogs) fails fast instead of hitting the network. Shared with
+ * the test rig.
+ */
 export function loopbackFetch(url, opts) {
   try {
     const h = new URL(String(url)).hostname;
@@ -20,9 +22,11 @@ export function loopbackFetch(url, opts) {
   return Promise.reject(new Error(`external fetch blocked: ${url}`));
 }
 
-// In-process mock upstream: proves the whole pipeline (auth, routing,
-// streaming, tool calls, vision bridge) without touching a real provider
-// or spending a cent. Bound to 127.0.0.1 on an ephemeral port.
+/**
+ * In-process mock upstream: proves the whole pipeline (auth, routing,
+ * streaming, tool calls, vision bridge) without touching a real provider
+ * or spending a cent. Bound to 127.0.0.1 on an ephemeral port.
+ */
 function createMockUpstream(state) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -83,6 +87,7 @@ function createMockUpstream(state) {
   });
 }
 
+/** Last user message as plain text (string or parts), for mock replies and assertions. */
 function lastUserText(body) {
   const msgs = [...(body.messages || [])].reverse();
   for (const m of msgs) {
@@ -102,6 +107,10 @@ const PNG_1PX =
 const PNG_1PX_ALT =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 
+/**
+ * End-to-end checks against the in-process mock: 16 checks, no network, no
+ * spend. Exits nonzero on any failure (`npm run selftest`).
+ */
 export async function runSelftest(log = console.log) {
   const results = [];
   const check = (name, ok, detail = '') => {
@@ -282,6 +291,7 @@ export async function runSelftest(log = console.log) {
   return failed === 0;
 }
 
+/** POST a chat completion to the router and return the parsed body. */
 function chat(base, auth, body) {
   return fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: auth, body: JSON.stringify(body) });
 }

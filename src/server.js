@@ -18,6 +18,7 @@ import {
 
 const MAX_BODY_BYTES = Number(process.env.ZCODE_ROUTER_MAX_BODY_BYTES) || 64 * 1024 * 1024;
 
+/** Constant-time comparison so token checks don't leak timing. */
 function keyMatches(presented, expected) {
   if (!presented || !expected) return false;
   const a = Buffer.from(presented);
@@ -25,6 +26,7 @@ function keyMatches(presented, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/** Bearer or x-api-key (Anthropic-protocol clients) against the local key. */
 function authorized(req, config) {
   const header = req.headers.authorization || '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -33,12 +35,14 @@ function authorized(req, config) {
   return keyMatches(bearer, config.localKey) || keyMatches(typeof xkey === 'string' ? xkey : null, config.localKey);
 }
 
+/** JSON response helper. */
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(body);
 }
 
+/** OpenAI-shaped error body. */
 function openaiError(res, status, message, code = null) {
   sendJson(res, status, { error: { message, type: 'invalid_request_error', code } });
 }
@@ -51,10 +55,12 @@ const ANTHROPIC_ERROR_TYPE = {
   429: 'rate_limit_error',
 };
 
+/** Anthropic-shaped error body with the status-specific error type. */
 function anthropicError(res, status, message) {
   sendJson(res, status, { type: 'error', error: { type: ANTHROPIC_ERROR_TYPE[status] || 'api_error', message } });
 }
 
+/** Read the request body as UTF-8, aborting past `limit` bytes. */
 function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -73,6 +79,7 @@ function readBody(req, limit = MAX_BODY_BYTES) {
   });
 }
 
+/** Resolve the vision bridge target: local engine, pinned `provider/model`, or auto-pick; null when bridging is off. */
 export async function resolveVisionEngine(config, opts = {}) {
   const vb = config.visionBridge;
   if (!vb || vb.enabled === false) return null;
@@ -93,6 +100,11 @@ export async function resolveVisionEngine(config, opts = {}) {
   return autoVisionEngine(config, opts);
 }
 
+/**
+ * The router: an http.Server speaking OpenAI Chat Completions and Anthropic
+ * Messages on the same port — auth, model routing, protocol translation,
+ * vision bridging. `fetchImpl` is injectable for tests.
+ */
 export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbose = false, visionOpts = {} }) {
   const visionCache = new VisionCache();
   const vopts = { fetchImpl, ...visionOpts };
@@ -373,6 +385,7 @@ export function createRouter({ config, log = () => {}, fetchImpl = fetch, verbos
   return server;
 }
 
+/** Listen on the configured host/port; resolves with the server once it accepts. */
 export function startServer({ config, log = console.error, verbose = false }) {
   return new Promise((resolve, reject) => {
     const server = createRouter({ config, log, verbose });

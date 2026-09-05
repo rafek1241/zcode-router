@@ -1,9 +1,15 @@
 import { REGISTRY, listProviders, providerEntry, resolveKey, assertSafeBaseURL, isLoopback, probeHeaders } from './providers.js';
 
+/** Model id whether the extra is stored as a string or an object. */
 function extraId(model) {
   return typeof model === 'string' ? model : model.id;
 }
 
+/**
+ * GET `<baseURL>/models` and merge novel live ids into the provider's stored
+ * extras (registry rows are never duplicated). `prune` drops extras missing
+ * from the live list; `select` filters which novel ids are kept.
+ */
 export async function refreshCatalog(config, providerId, { fetchImpl = fetch, prune = false, select } = {}) {
   const entry = providerEntry(config, providerId);
   if (!entry || !entry.enabled) throw new Error(`provider ${providerId} is not enabled`);
@@ -60,11 +66,14 @@ export async function refreshCatalog(config, providerId, { fetchImpl = fetch, pr
   return { added, kept, skipped, pruned };
 }
 
-// The registry keeps only wire-protocol exceptions, so an enabled provider can
-// have zero models (fresh key, or an upgrade from a preset-seeded registry).
-// Each such provider pulls its live list once at server start — same thing
-// setup does after keys — instead of serving an empty catalog until the next
-// `setup`/`models refresh`. Best-effort: offline or odd upstreams stay empty.
+/**
+ * The registry keeps only wire-protocol exceptions, so an enabled provider can
+ * have zero models (fresh key, or an upgrade from a preset-seeded registry).
+ * Each such provider pulls its live list once — same thing setup does after
+ * keys — instead of serving an empty catalog until the next
+ * `setup`/`models refresh`. Best-effort: offline or odd upstreams stay empty.
+ * Returns the ids that gained models.
+ */
 export async function refreshEmptyProviders(config, { fetchImpl = fetch, log = () => {} } = {}) {
   const refreshed = [];
   for (const entry of listProviders(config)) {

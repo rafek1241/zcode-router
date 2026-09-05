@@ -10,10 +10,12 @@ import { describeServiceTarget, localDir, serviceStatus } from './service.js';
 import { patchZcodeConfig, zcodeConfigPath } from './zcode-config.js';
 import { readLastError, formatLastError } from './last-error.js';
 
+/** Append one check result row. */
 function add(checks, status, name, detail = '') {
   checks.push({ status, name, detail });
 }
 
+/** True when `port` is not bound on loopback. */
 async function portFree(port) {
   return new Promise((resolve) => {
     const probe = net.createServer();
@@ -23,6 +25,7 @@ async function portFree(port) {
   });
 }
 
+/** Gather every health check (config, keys, port, providers, vision cache, last error). */
 export async function collectDoctorChecks({
   probe = false,
   fetchImpl = fetch,
@@ -143,6 +146,7 @@ export async function collectDoctorChecks({
   return { checks, failed, config: cfg };
 }
 
+/** Render checks as tagged lines plus the copy-paste zCode setup block. */
 export function formatDoctorReport({ checks, failed, config }) {
   const tag = { ok: ' OK ', fail: 'FAIL', info: 'INFO', warn: 'WARN' };
   const lines = checks.map((c) => `${tag[c.status] || c.status}  ${c.name}${c.detail ? `  — ${c.detail}` : ''}`);
@@ -161,6 +165,7 @@ export function formatDoctorReport({ checks, failed, config }) {
   return lines.join('\n');
 }
 
+/** Safe auto-fixes: config permissions and upserting the zCode provider record. */
 export function applyDoctorFixes({ config } = {}) {
   const cfg = config || loadConfig();
   const fixed = [];

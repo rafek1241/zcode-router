@@ -18,6 +18,7 @@
 // time an upstream ships a model.
 import { getVisionIndex, lookupVision } from './vision-capabilities.js';
 
+/** Registry model row: openai protocol by default, plus per-model exceptions. */
 const m = (id, extra = {}) => ({ id, protocol: 'openai', ...extra });
 
 export const GROUP_ORDER = ['subscription', 'api', 'catalog'];
@@ -231,6 +232,7 @@ export const REGISTRY = {
   },
 };
 
+/** Merge a registry row with user overrides into a routable model (protocol, upstream rename, vision pin). */
 function hydrateModel(base, user, model) {
   const e = typeof model === 'string' ? { id: model } : model;
   const protocol = user?.overrides?.[e.id]?.protocol ?? e.protocol ?? base.protocol ?? 'openai';
@@ -243,6 +245,7 @@ function hydrateModel(base, user, model) {
   return { id: e.id, protocol, ...(upstream ? { upstream } : {}), ...(visionPin === undefined ? {} : { visionPin }) };
 }
 
+/** Registry + user config merged view of one provider (enabled state, stored key, models). */
 export function providerEntry(config, id) {
   const base = REGISTRY[id];
   const user = config?.providers?.[id];
@@ -280,6 +283,7 @@ export function providerEntry(config, id) {
   };
 }
 
+/** All known providers (registry + user-configured custom) in display order. */
 export function listProviders(config) {
   const ids = new Set([...Object.keys(REGISTRY), ...Object.keys(config?.providers || {})]);
   const entries = [...ids].map((id) => providerEntry(config, id)).filter(Boolean);
@@ -298,6 +302,7 @@ export function listProviders(config) {
   return entries;
 }
 
+/** Provider rows for the setup picker: key readiness, enabled state, note. */
 export function setupEntries(config) {
   return listProviders(config).map((p) => ({
     id: p.id,
@@ -309,6 +314,7 @@ export function setupEntries(config) {
   }));
 }
 
+/** Enable the picked providers; disable (or drop, if never configured) the rest. */
 export function applyProviderSelection(cfg, selectedIds) {
   const selected = new Set(selectedIds);
   const next = { ...cfg, providers: { ...(cfg.providers || {}) } };
@@ -327,6 +333,7 @@ export function applyProviderSelection(cfg, selectedIds) {
   return next;
 }
 
+/** Key resolution order: environment, stored key, shared with another provider. */
 export function resolveKey(entry, config) {
   for (const env of entry.keyEnv || []) {
     if (process.env[env]) return { key: process.env[env], source: `env:${env}` };
@@ -338,6 +345,7 @@ export function resolveKey(entry, config) {
   return { key: null, source: null };
 }
 
+/** Routable `provider/model` ids across enabled, keyed providers. */
 export function catalog(config) {
   const out = [];
   for (const p of listProviders(config)) {
@@ -350,6 +358,12 @@ export function catalog(config) {
   return out;
 }
 
+/**
+ * Route `provider/model` to upstream coordinates. Unknown ids pass through:
+ * the router is a byte-level proxy, and upstreams ship new models before the
+ * registry does — typing `provider/new-model` in zCode just works (image
+ * support resolves dynamically; pin it with `models vision <p/m> on|off`).
+ */
 export function resolveModel(config, routedId) {
   const slash = routedId.indexOf('/');
   if (slash <= 0) return null;
@@ -378,6 +392,7 @@ export function resolveModel(config, routedId) {
 // Vision models that are cheap enough to read screenshots all day.
 const CHEAP_TIER = /flash|haiku|mini|turbo|small|lite/i;
 
+/** Pick the default native-vision model for the bridge, cheap tiers first; null when no catalog model qualifies. */
 export async function autoVisionEngine(config, visionOpts = {}) {
   const ids = catalog(config).map((m) => m.id);
   const native = await batchVisionSupport(config, ids, visionOpts);
@@ -398,12 +413,12 @@ export async function autoVisionEngine(config, visionOpts = {}) {
     : null;
 }
 
-// Pin wins; otherwise ask the public catalogs (unknown => false => bridge).
+/** Pin wins; otherwise ask the public catalogs (unknown => false => bridge). */
 export async function isVisionCapable(config, routedId, visionOpts = {}) {
   return (await batchVisionSupport(config, [routedId], visionOpts)).get(routedId) === true;
 }
 
-// One catalog fetch for many ids (single-flight inside getVisionIndex).
+/** Vision support for many ids with a single catalog fetch (single-flight inside getVisionIndex). */
 export async function batchVisionSupport(config, routedIds, visionOpts = {}) {
   const out = new Map();
   const pending = [];
@@ -423,6 +438,7 @@ export async function batchVisionSupport(config, routedIds, visionOpts = {}) {
   return out;
 }
 
+/** Auth headers matching the provider's wire protocol (Bearer vs x-api-key). */
 export function probeHeaders(entry, key) {
   if (entry?.protocol === 'messages') {
     return key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {};
@@ -430,6 +446,7 @@ export function probeHeaders(entry, key) {
   return key ? { authorization: `Bearer ${key}` } : {};
 }
 
+/** True for loopback hosts, in both IPv6 spellings (`::1` and `[::1]`). */
 export function isLoopback(url) {
   try {
     const h = new URL(url).hostname;
@@ -439,8 +456,10 @@ export function isLoopback(url) {
   }
 }
 
-// Upstream base URLs must be HTTPS — API keys ride in every request header.
-// Loopback is exempt so local runtimes (Ollama, LM Studio) can be vision engines.
+/**
+ * Upstream base URLs must be HTTPS — API keys ride in every request header.
+ * Loopback is exempt so local runtimes (Ollama, LM Studio) can be vision engines.
+ */
 export function assertSafeBaseURL(url) {
   let u;
   try {
