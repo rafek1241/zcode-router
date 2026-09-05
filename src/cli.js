@@ -274,6 +274,13 @@ async function cmdStart(args) {
     }
   }
   if (catalog(cfg).length === 0) {
+    // An upgrade can leave every enabled provider with zero models (registry
+    // presets removed, key stored). Backfill once before refusing to start;
+    // offline upstreams fail here and the guard below still applies.
+    const ids = await refreshEmptyProviders(cfg, { log: (m) => err(`[router] ${m}`) });
+    if (ids.length) saveConfig(cfg);
+  }
+  if (catalog(cfg).length === 0) {
     err('No routable models: enable a provider and store its key first (`zcode-router setup`).');
     process.exitCode = 1;
     return;
