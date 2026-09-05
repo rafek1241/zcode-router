@@ -31,7 +31,7 @@ test('refresh merges live ids into extra without duplicating the registry', asyn
 });
 
 test('refresh skips ids already in the registry and extras already stored', async () => {
-  await withModelsServer({ data: [{ id: 'deepseek-v4-flash' }, { id: 'shiny-new' }, { id: 'already' }] }, async (port) => {
+  await withModelsServer({ data: [{ id: 'minimax-m3' }, { id: 'shiny-new' }, { id: 'already' }] }, async (port) => {
     const cfg = {
       providers: {
         'opencode-go': {
@@ -44,9 +44,22 @@ test('refresh skips ids already in the registry and extras already stored', asyn
     };
     const result = await refreshCatalog(cfg, 'opencode-go', { fetchImpl: fetch });
     assert.deepEqual(result.added, ['shiny-new']);
-    assert.ok(result.skipped.includes('deepseek-v4-flash'));
+    assert.ok(result.skipped.includes('minimax-m3'));
     assert.ok(result.kept.includes('already'));
     assert.equal(cfg.providers['opencode-go'].extra.filter((m) => m.id === 'shiny-new').length, 1);
+  });
+});
+
+test('plain ids are not registry-pinned: live refresh picks them up', async () => {
+  await withModelsServer({ data: [{ id: 'kimi-k3' }] }, async (port) => {
+    const cfg = {
+      providers: {
+        'opencode-go': { enabled: true, key: 'sk', baseURL: `http://127.0.0.1:${port}/v1` },
+      },
+    };
+    const result = await refreshCatalog(cfg, 'opencode-go', { fetchImpl: fetch });
+    assert.deepEqual(result.added, ['kimi-k3']);
+    assert.deepEqual(cfg.providers['opencode-go'].extra, [{ id: 'kimi-k3', protocol: 'openai' }]);
   });
 });
 

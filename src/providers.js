@@ -9,6 +9,12 @@
 //
 // Catalog ids are `provider/id`. When upstream wants a different model string
 // (ClinePass `cline-pass/…`, Command Code `google/gemini-…`), set `upstream`.
+//
+// The registry lists ONLY wire-protocol exceptions: models needing a
+// non-default protocol or an upstream rename. Plain ids are NOT listed — they
+// arrive via `models refresh` (live /models, auto-run by setup once keys
+// exist) or plain passthrough (`provider/any-id` just routes). This keeps the
+// list from rotting every time an upstream ships a model.
 import { getVisionIndex, lookupVision, resolveVisionSupport } from './vision-capabilities.js';
 
 const m = (id, extra = {}) => ({ id, protocol: 'openai', ...extra });
@@ -22,17 +28,6 @@ export const REGISTRY = {
     baseURL: 'https://opencode.ai/zen/go/v1',
     keyEnv: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
     models: [
-      m('deepseek-v4-flash'),
-      m('deepseek-v4-pro'),
-      m('glm-5.2'),
-      m('glm-5.1'),
-      m('kimi-k3'),
-      m('kimi-k2.7-code'),
-      m('kimi-k2.6'),
-      m('mimo-v2.5'),
-      m('mimo-v2.5-pro'),
-      m('hy3'),
-      m('grok-4.5'),
       m('minimax-m3', { protocol: 'messages' }),
       m('minimax-m2.7', { protocol: 'messages' }),
       m('minimax-m2.5', { protocol: 'messages' }),
@@ -57,21 +52,8 @@ export const REGISTRY = {
     baseURL: 'https://api.cline.bot/api/v1',
     keyEnv: ['CLINEPASS_API_KEY', 'CLINE_API_KEY'],
     upstreamPrefix: 'cline-pass/',
-    note: 'Requires an active ClinePass subscription.',
-    models: [
-      m('deepseek-v4-flash'),
-      m('deepseek-v4-pro'),
-      m('glm-5.2'),
-      m('kimi-k3'),
-      m('kimi-k2.7-code'),
-      m('kimi-k2.6'),
-      m('mimo-v2.5'),
-      m('mimo-v2.5-pro'),
-      m('minimax-m3'),
-      m('qwen3.7-max'),
-      m('qwen3.7-plus'),
-      m('qwen3.8-max'),
-    ],
+    note: 'Requires an active ClinePass subscription. Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'qwen-plan': {
     label: 'Qwen / Alibaba Model Studio plan (subscription)',
@@ -79,17 +61,8 @@ export const REGISTRY = {
     baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
     baseURLEnv: 'QWEN_PLAN_BASE_URL',
     keyEnv: ['QWEN_PLAN_API_KEY', 'DASHSCOPE_API_KEY'],
-    note: 'Plan keys (sk-sp- prefix). Singapore token-plan URL by default; set QWEN_PLAN_BASE_URL for another region.',
-    models: [
-      m('qwen3.8-max'),
-      m('qwen3.8-max-preview'),
-      m('qwen3.7-max'),
-      m('qwen3.7-plus'),
-      m('qwen3.6-flash'),
-      m('deepseek-v4-pro'),
-      m('deepseek-v4-flash-0731'),
-      m('glm-5.2'),
-    ],
+    note: 'Plan keys (sk-sp- prefix). Singapore token-plan URL by default; set QWEN_PLAN_BASE_URL for another region. Models arrive via live refresh.',
+    models: [],
   },
   commandcode: {
     label: 'Command Code Provider API (subscription)',
@@ -134,10 +107,6 @@ export const REGISTRY = {
     baseURL: 'https://ollama.com/v1',
     keyEnv: ['OLLAMA_API_KEY', 'OLLAMA_CLOUD_API_KEY'],
     models: [
-      m('glm-5.2'),
-      m('kimi-k2.7-code'),
-      m('minimax-m3'),
-      m('deepseek-v4-pro'),
       m('deepseek-v4-flash', { upstream: 'deepseek-v4-flash:cloud' }),
     ],
   },
@@ -146,29 +115,32 @@ export const REGISTRY = {
     group: 'api',
     baseURL: 'https://api.deepseek.com/v1',
     keyEnv: ['DEEPSEEK_API_KEY'],
-    models: [m('deepseek-v4-flash'), m('deepseek-v4-pro')],
+    note: 'Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'kimi-api': {
     label: 'Kimi Platform API (global)',
     group: 'api',
     baseURL: 'https://api.moonshot.ai/v1',
     keyEnv: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
-    models: [m('kimi-k3')],
+    note: 'Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'kimi-api-cn': {
     label: 'Kimi Platform API (China)',
     group: 'api',
     baseURL: 'https://api.moonshot.cn/v1',
     keyEnv: ['KIMI_API_CN_KEY', 'MOONSHOT_CN_API_KEY'],
-    note: 'Keys are not interchangeable with the global platform.',
-    models: [m('kimi-k3')],
+    note: 'Keys are not interchangeable with the global platform. Models arrive via live refresh.',
+    models: [],
   },
   'grok-api': {
     label: 'xAI Grok API',
     group: 'api',
     baseURL: 'https://api.x.ai/v1',
     keyEnv: ['XAI_API_KEY', 'GROK_API_KEY'],
-    models: [m('grok-4.5')],
+    note: 'Models arrive via live refresh (setup runs it after keys).',
+    models: [],
   },
   'anthropic-api': {
     label: 'Anthropic API',

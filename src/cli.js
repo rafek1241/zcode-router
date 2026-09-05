@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { homeDir, configPath, loadConfig, saveConfig, defaultConfig, DEFAULT_PORT, bindHost, pidPath, clearPidfile, isNpxCachePath } from './config.js';
-import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, setupEntries, applyProviderSelection, batchVisionSupport } from './providers.js';
+import { REGISTRY, listProviders, catalog, resolveKey, providerEntry, assertSafeBaseURL, isLoopback, setupEntries, applyProviderSelection, batchVisionSupport } from './providers.js';
 import { startServer, resolveVisionEngine } from './server.js';
 import { runSelftest } from './selftest.js';
 import { patchZcodeConfig } from './zcode-config.js';
@@ -139,6 +139,20 @@ async function cmdSetup() {
       } else {
         const key = await hiddenPrompt(`  API key for ${id} (input hidden, empty = skip): `);
         if (key) cfg.providers[id].key = key;
+      }
+    }
+    // Keys exist now, so pull each provider's live model list — the registry
+    // only keeps wire-protocol exceptions, everything else arrives here.
+    // Best-effort: offline or odd upstreams just log and move on.
+    for (const id of chosen) {
+      const entry = providerEntry(cfg, id);
+      if (!entry?.enabled || isLoopback(entry.baseURL)) continue;
+      if (!resolveKey(entry, cfg).key) continue;
+      try {
+        const result = await refreshCatalog(cfg, id, { select: async (novel) => novel });
+        if (result.added.length) log(`  ${id}: picked up ${result.added.length} model(s): ${result.added.join(', ')}`);
+      } catch (e) {
+        log(`  ${id}: live model list unavailable (${e.message}) — type ids manually or run \`models refresh\` later.`);
       }
     }
     const engine = cfg.visionBridge?.engine;

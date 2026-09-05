@@ -10,7 +10,7 @@ Things I would fix, ordered by how much they hurt the “install once, forget it
 - **Stale vision flags** on opencode-go Kimi K3 / Qwen max (they take images; we treated them as text-only and always spent a bridge call). Gone: no hardcoded flags — image support resolves dynamically from models.dev/OpenRouter, pins via `models vision <p/m> on|off|auto`, and a native send rejected with 400 retries once through the bridge.
 - **Doctor was an untestable CLI blob.** Checks live in `src/doctor.js` (`collectDoctorChecks`, `formatDoctorReport`, `applyDoctorFixes`) with `--json` and `--fix`.
 - **ZCode provider was copy-paste.** `setup` / `start` / `zcode-patch` / `doctor --fix` upsert a `zcode-router` provider into `~/.zcode/v2/config.json`.
-- **Catalog-only providers showed an empty picker.** `models refresh` GETs `/models` and stores new ids as extras.
+- **Catalog-only providers showed an empty picker.** `models refresh` GETs `/models` and stores new ids as extras. Setup now auto-runs it after keys, so the registry keeps only wire-protocol exceptions (`protocol: messages`, `upstream` renames) instead of seed lists that rot.
 - **Setup never asked about screenshots.** After keys, setup offers `auto` / pin / `local` / `off`.
 - **Non-image attachments were not bridged.** `file` / `document` / `file_url` parts in zCode caches (and `data:` URLs) become fenced text. PDFs use `pdftotext` when present.
 - **Failed upstreams were opaque.** Last error is stored at `~/.zcode-router/last-error.json`; `doctor` and `doctor last` print it.

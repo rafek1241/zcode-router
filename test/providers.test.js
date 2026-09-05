@@ -133,7 +133,10 @@ test('subscription providers from the codex-router catalog are registered', () =
     assert.ok(ids.includes(id), `missing provider ${id}`);
   }
   assert.ok(!ids.includes('zai-coding'), 'ZCode already ships GLM Coding Plan — do not duplicate it');
-  assert.ok(REGISTRY['qwen-plan'].models.some((m) => m.id === 'qwen3.8-max'));
+  assert.deepEqual(REGISTRY['qwen-plan'].models, [], 'plain ids arrive via live refresh, not the registry');
+  assert.deepEqual(REGISTRY.clinepass.models, [], 'upstreamPrefix covers clinepass renames — nothing to pin');
+  assert.ok(REGISTRY['opencode-go'].models.every((m) => m.protocol === 'messages' || m.upstream), 'registry keeps wire exceptions only');
+  assert.ok(REGISTRY['opencode-go'].models.some((m) => m.id === 'minimax-m3' && m.protocol === 'messages'));
   assert.ok(REGISTRY.commandcode.models.some((m) => m.id === 'claude-opus-4.8' && m.protocol === 'messages'));
   assert.equal(REGISTRY['anthropic-api'].protocol, 'messages');
   assert.equal(REGISTRY.groq.models.length, 0, 'catalog-only providers ship no pinned models');
